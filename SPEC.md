@@ -8,7 +8,8 @@ in `spec/rfc/` cite the sections of this file by number ("SPEC 5").
 
 - Do what nginx does for the common small setup, a TLS-terminating reverse
   proxy in front of local HTTP services, and nothing else.
-- Our own code: Rust `std` only, `#![forbid(unsafe_code)]`, about 3,000
+- Our own code: Rust `std` only, `unsafe` denied but in the functions
+  section 4 lists, about 3,000
   lines excluding tests.
 - One third-party dependency family: libcrux (formally verified crypto),
   pinned by version and checksum in `Cargo.lock`.
@@ -165,6 +166,9 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
   backs up into the kernel queue. Slots are released by an RAII guard on
   every exit path, including panics.
 - `/dev/urandom` is opened once, at startup, and kept open.
+- `unsafe` is denied by a lint, and allowed by name only in `crypto::wipe`,
+  which overwrites secrets with volatile writes. Every `unsafe` block has a
+  `SAFETY:` comment, which clippy requires.
 - `panic = "unwind"`: a panic ends one connection, not the server. Integer
   overflow checks stay on in release builds.
 - No signal handling, no privilege code, no daemonising. systemd grants the
@@ -312,6 +316,10 @@ Handshake behaviour:
   8446 appendix C.3), so a failing random number generator cannot repeat a
   nonce and give the key away. Every other random value comes from the
   kernel CSPRNG; if reading it fails, the handshake fails.
+- Every secret (the key exchange output, the early, handshake and master
+  secrets, superseded traffic secrets and keys) is overwritten with
+  volatile writes as soon as everything derived from it is computed.
+  Copies the compiler made while moving a value are not reached.
 
 Certificates and keys:
 
@@ -334,8 +342,6 @@ Known departures from RFC 8446 (each is listed in `spec/rfc/rfc8446.req`):
 - The certificate chain is not parsed, so nothing the RFC asks of it is
   checked: its order, the X.509 version, the key usage, SHA-1 signatures,
   and the client's `signature_algorithms_cert`.
-- Secrets are overwritten when no longer needed, but without `unsafe` code
-  the compiler is free to drop such writes.
 - A ChangeCipherSpec between the pieces of a split handshake message is
   refused, not dropped.
 - When a tunnel is ended at once while its other thread is blocked writing
@@ -825,7 +831,7 @@ port 80 is reachable by the ACME server.
 ## 10. Risks and limits
 
 - **libcrux is pre-release**, and its wrapper crates contain 23 lines of
-  `unsafe` that our own `forbid` does not cover.
+  `unsafe` that our own lint does not cover.
 - **Side channels** are argued at source level only.
 - **The TLS code is new and ours.** It is the largest unverified-by-proof part;
   the mitigations are the spec conformance tests, interop, tlsfuzzer and

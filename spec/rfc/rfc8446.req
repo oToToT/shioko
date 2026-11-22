@@ -1077,18 +1077,17 @@
 
 @ 7.1
 > Once all the values which are to be derived from a given secret have been computed, that secret SHOULD be erased.
-= code overwrite each secret (the ECDHE output, the early, handshake and master secrets, superseded traffic secrets) as soon as everything derived from it has been computed
+= code overwrite each secret (the ECDHE output, the early, handshake and master secrets, superseded traffic secrets) with volatile writes (crypto::wipe) as soon as everything derived from it has been computed; copies the compiler made while moving a value are not reached (SPEC 5)
 = test bug_master_secret_outlived_its_use
 = test bug_handshake_secrets_were_never_wiped
-= deviation SPEC 5, known departures: without unsafe code the compiler may drop the overwrites; they are best effort
-= deviation SPEC section 5, known departures: secrets are overwritten when no longer needed, but without unsafe code the compiler is free to drop such writes, so erasure is not guaranteed
+= test wipe_zeroes_every_byte
 
 @ 7.2
 > Once client_/server_application_traffic_secret_N+1 and its associated traffic keys have been computed, implementations SHOULD delete client_/server_application_traffic_secret_N and its associated traffic keys.
 = code on every KeyUpdate replace the traffic secret, key and IV of that direction in place, so generation N is no longer held once N+1 is installed
 = test the_next_generation_starts_over
 = check Handshake.KeysMoveForward
-= deviation SPEC section 5, known departures: the old secret and keys are overwritten, but without unsafe code the compiler is free to drop such writes
+= code the old secret and keys are overwritten in place by the new ones, and wiped with volatile writes when dropped (SPEC 5)
 
 @ 7.4.2
 > Note that this octet string ("Z" in IEEE 1363 terminology) as output by FE2OSP (the Field Element to Octet String Conversion Primitive) has constant length for any given field; leading zeros found in this octet string MUST NOT be truncated.

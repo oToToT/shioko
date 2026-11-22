@@ -48,11 +48,14 @@ lto = true
 strip = true
 
 [lints.rust]
-unsafe_code = "forbid"
+# Denied everywhere but in the few functions that allow it by name and say
+# why each block is sound (SPEC.md section 4).
+unsafe_code = "deny"
 # `cfg(kani)` marks the proofs that tools/prove.sh checks with Kani.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [lints.clippy]
+undocumented_unsafe_blocks = "deny"
 indexing_slicing = "deny"
 unwrap_used = "deny"
 expect_used = "deny"

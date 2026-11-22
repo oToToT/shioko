@@ -17,7 +17,8 @@ dependencies at run time.
   `certbot --webroot`, so certificates renew without an nginx plugin.
 - Logs a line per request to journald.
 
-It is written in Rust with `unsafe` forbidden, on top of libcrux, a
+It is written in Rust without `unsafe`, but for the one function that
+wipes secrets, on top of libcrux, a
 formally verified crypto library. The TLS and HTTP state machines and the
 threading are specified in TLA+ and model-checked, and the code is tested
 against those specs (see "Checking it"). The models are checked within
@@ -185,7 +186,6 @@ it departs from in `spec/rfc/`.
   certificates.
 - The certificate chain is sent as it is in the file and never parsed, so
   nothing the RFC asks of a chain is checked.
-- Secrets cannot be reliably erased without `unsafe` code.
 
 **HTTP (RFC 9110, RFC 9112)**
 

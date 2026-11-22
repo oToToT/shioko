@@ -35,11 +35,18 @@ pub fn random(buf: &mut [u8]) -> Result<(), Error> {
     reader.read_exact(buf).map_err(|_| Error)
 }
 
-/// Overwrites a secret. Best effort: without `unsafe` the compiler is
-/// allowed to drop the write, and `black_box` only discourages that.
+/// Overwrites a secret with zeros. The writes are volatile, so the compiler
+/// may not drop them as stores nothing reads. Copies it made while moving
+/// the value (a register spilled to the stack, an old location after a
+/// move) are not reached.
+#[allow(unsafe_code)]
 pub fn wipe(bytes: &mut [u8]) {
-    bytes.fill(0);
-    std::hint::black_box(bytes);
+    for byte in bytes.iter_mut() {
+        // SAFETY: `byte` comes from a `&mut [u8]`, so it is valid, aligned
+        // and not used by anyone else while we write it.
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Compare two byte strings without an early exit on the first difference.
@@ -658,6 +665,14 @@ mod tests {
         let key = SigningKey::from_bytes(&arr(RFC6979_KEY)).unwrap();
         assert!(key.sign_with_nonce(b"m", &[0u8; 32]).is_none());
         assert!(key.sign_with_nonce(b"m", &arr(n)).is_none());
+    }
+
+    #[test]
+    fn wipe_zeroes_every_byte() {
+        let mut secret = [0xa5u8; 77];
+        wipe(&mut secret);
+        assert_eq!(secret, [0u8; 77]);
+        wipe(&mut []);
     }
 
     #[test]
