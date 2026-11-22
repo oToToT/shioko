@@ -516,7 +516,7 @@ fn sni_is_matched_without_case_and_exactly() {
 /// a record brought data, each transport read with the full timeout. A
 /// client sending a KeyUpdate or an empty record now and then kept that
 /// read waiting for ever, past every deadline the proxy had set (the slow
-/// head fixed in M2, now over TLS). The timeout is now a budget for the
+/// head fixed for plain HTTP, now over TLS). The timeout is now a budget for the
 /// whole read.
 #[test]
 fn bug_records_without_data_kept_a_read_waiting() {

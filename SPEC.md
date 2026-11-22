@@ -92,7 +92,8 @@ certificate is a startup error with a line number.
 
 Fixed, not configurable:
 
-- Listens on port 80 and port 443, all addresses, IPv4 and IPv6.
+- Listens on port 80 and port 443, all addresses, IPv4 and IPv6, through
+  one dual-stack socket each (`::`, with IPv4 as mapped addresses).
 - ACME tokens are read from `/var/lib/shioko/acme/.well-known/acme-challenge`,
   where `certbot --webroot -w /var/lib/shioko/acme` writes them.
 - Forwarding headers, timeouts and limits (section 4), the TLS profile.

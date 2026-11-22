@@ -2,7 +2,7 @@
 # Install as /etc/systemd/system/shioko.service; see deploy/README.md.
 [Unit]
 Description=shioko reverse proxy
-Documentation=file:///etc/shioko/README.md
+Documentation=https://github.com/oToToT/Shioko/blob/main/deploy/README.md
 After=network-online.target
 Wants=network-online.target
 
