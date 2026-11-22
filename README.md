@@ -247,7 +247,9 @@ of the run.
 `tools/e2e.sh [soak MINUTES]` runs the end-to-end environment of `ci/e2e/`
 (needs Docker and network to pull images): shioko as deployed, nginx for
 comparison, Vaultwarden, Jellyfin, a test upstream, and Pebble issuing a
-certificate to certbot through shioko. Results go to `target/e2e/`.
+certificate to certbot through shioko. It also measures latency and
+throughput next to nginx, and fails if shioko falls too far behind. Results
+go to `target/e2e/`.
 `tools/e2e.sh record` does the same with a development build that logs the
 steps of its threads, and TLC checks the whole run against `spec/Server.tla`
 (`tools/servertrace.py`).
