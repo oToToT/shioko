@@ -8,6 +8,7 @@ fn reason(status: u16) -> &'static str {
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         413 => "Content Too Large",
         414 => "URI Too Long",
         421 => "Misdirected Request",
@@ -187,7 +188,7 @@ mod tests {
 
     #[test]
     fn every_status_we_send_has_a_name() {
-        for status in [200, 301, 400, 403, 404, 413, 414, 421, 431, 501, 502, 504] {
+        for status in [200, 301, 400, 403, 404, 405, 413, 414, 421, 431, 501, 502, 504] {
             assert_ne!(reason(status), "Error", "{status}");
         }
     }

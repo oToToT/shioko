@@ -1178,8 +1178,10 @@ fn requests_we_refuse_and_why() {
         (format!("POST / HTTP/1.1\r\n{host}Content-Length: 7\r\n\r\n1234567"), 413),
         (format!("POST / HTTP/1.1\r\n{host}Transfer-Encoding: chunked\r\n\r\n7\r\n1234567\r\n0\r\n\r\n"), 413),
         (format!("POST / HTTP/1.1\r\n{host}Transfer-Encoding: chunked\r\n\r\nzz\r\n"), 400),
-        (format!("TRACE / HTTP/1.1\r\n{host}Content-Length: 1\r\n\r\nx"), 400),
-        (format!("TRACE / HTTP/1.1\r\n{host}Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"), 400),
+        // TRACE, as nginx refuses it, with or without a body.
+        (format!("TRACE / HTTP/1.1\r\n{host}\r\n"), 405),
+        (format!("TRACE / HTTP/1.0\r\n{host}Content-Length: 1\r\n\r\nx"), 405),
+        (format!("TRACE / HTTP/1.1\r\n{host}Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"), 405),
         (format!("CONNECT / HTTP/1.1\r\n{host}\r\n"), 400),
         // Without a usable Host the answer is 400, whatever else is wrong.
         ("POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n".into(), 400),
@@ -1190,6 +1192,7 @@ fn requests_we_refuse_and_why() {
         (format!("GET http://site.test/ HTTP/1.1\r\n{host}\r\n"), 400),
         (format!("CONNECT site.test:443 HTTP/1.1\r\n{host}\r\n"), 400),
         (format!("GET * HTTP/1.1\r\n{host}\r\n"), 400),
+        (format!("OPTIONS * HTTP/1.1\r\n{host}\r\n"), 400),
         (format!("GET / HTTP/2.0\r\n{host}\r\n"), 400),
         (format!("GET /a b HTTP/1.1\r\n{host}\r\n"), 400),
         (format!("{} / HTTP/1.1\r\n{host}\r\n", "M".repeat(33)), 501),
@@ -1226,11 +1229,10 @@ fn requests_we_refuse_and_why() {
         format!("GET / HTTP/1.1\r\n{host}{}\r\n", "A: b\r\n".repeat(99)),
         format!("GET / HTTP/1.1\r\n{host}{}\r\n", "Via: 1.1 shioko\r\n".repeat(7)),
         format!("\r\nGET / HTTP/1.1\r\n{host}\r\n"),
-        format!("OPTIONS * HTTP/1.1\r\n{host}\r\n"),
+        format!("OPTIONS /preflight HTTP/1.1\r\n{host}\r\n"),
         format!("GET / HTTP/1.2\r\n{host}\r\n"),
         "GET / HTTP/1.1\r\nHOST: Site.Test:8080\r\n\r\n".to_string(),
         "GET / HTTP/1.1\r\nHost: site.test:\r\n\r\n".to_string(),
-        format!("TRACE / HTTP/1.1\r\n{host}Content-Length: 0\r\n\r\n"),
         format!("POST / HTTP/1.1\r\n{host}Content-Length: 000000000000000000000002\r\n\r\nhi"),
         format!("GET /a|b^c[0]{{d}} HTTP/1.1\r\n{host}\r\n"),
     ] {
@@ -1608,7 +1610,7 @@ fn end_to_end_fields_are_passed_on_unchanged() {
                   If-Match: \"a\"\r\nIf-None-Match: *\r\nIf-Modified-Since: Sun, 06 Nov 1994 08:49:37 GMT\r\n\
                   If-Unmodified-Since: Sun, 06 Nov 1994 08:49:37 GMT\r\nIf-Range: \"a\"\r\nRange: bytes=0-1\r\n\
                   Max-Forwards: 0\r\n";
-    for method in ["GET", "OPTIONS", "TRACE", "DELETE"] {
+    for method in ["GET", "OPTIONS", "DELETE"] {
         let (_, sent) = Talk::default().go(&format!("{method} / HTTP/1.1\r\nHost: site.test\r\n{fields}\r\n"), &[PLAIN_OK]);
         assert!(sent[0].starts_with(&format!("{method} / HTTP/1.1\r\n{fields}Host: site.test\r\n")), "{method}: {:?}", sent[0]);
     }
@@ -1900,12 +1902,13 @@ fn bug_valid_host_forms_were_refused() {
 }
 
 /// Bug: `Expect: 100-continue` on a request with `Content-Length: 0` got a
-/// 100, and TRACE with `Content-Length: 0` was refused.
+/// 100, and TRACE with `Content-Length: 0` was refused as TRACE with a body
+/// (400). TRACE is now refused whatever its body, with 405, as by nginx.
 #[test]
 fn bug_zero_length_was_taken_for_a_body() {
     let put = "PUT / HTTP/1.1\r\nHost: site.test\r\nContent-Length: 0\r\nExpect: 100-continue\r\n\r\n";
     assert!(!Talk::default().go(put, &[PLAIN_OK]).0.contains("100 Continue"));
-    assert_eq!(Talk::default().status("TRACE / HTTP/1.1\r\nHost: site.test\r\nContent-Length: 0\r\n\r\n"), 200);
+    assert_eq!(Talk::default().status("TRACE / HTTP/1.1\r\nHost: site.test\r\nContent-Length: 0\r\n\r\n"), 405);
 }
 
 /// Bug: a request without Host was answered 501 rather than 400 when it

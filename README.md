@@ -71,14 +71,17 @@ it departs from in `spec/rfc/`.
 
 - **Absolute-form request targets are refused.** RFC 9112 section 3.2.2
   says a server must accept `GET http://host/path HTTP/1.1`. shioko answers
-  400 to anything but an origin-form target (`/path`), or `*` with OPTIONS.
+  400 to anything but an origin-form target (`/path`).
   Browsers and CDNs send origin-form to an origin; accepting the other form
   means choosing between two host names in one request. CONNECT is refused
   for the same reason.
 - Request targets may hold characters the URI grammar forbids (`|`, `^`,
   `[`, `{`, ...), because browsers send them unencoded; they are forwarded
   as received.
-- `Max-Forwards` is not processed for TRACE and OPTIONS.
+- `Max-Forwards` is not processed for OPTIONS.
+- TRACE is refused with 405 (without the `Allow` field RFC 9110 asks for)
+  and `OPTIONS *` with 400, as nginx refuses them. OPTIONS for a path, the
+  CORS preflight, is forwarded.
 - Header lists with empty elements (`Transfer-Encoding: chunked,`) are
   refused.
 - The upstream hop is plain HTTP/1.1, with a new connection per request.

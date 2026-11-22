@@ -406,6 +406,8 @@ PARITY = [
     ("chat.test", "GET", "/two-lengths", [("Content-Length", "1"), ("Content-Length", "2")], b"x"),
     ("chat.test", "GET", "/te-and-cl", [("Transfer-Encoding", "chunked"), ("Content-Length", "3")], b"0\r\n\r\n"),
     ("chat.test", "OPTIONS", "*", [], b""),
+    ("chat.test", "OPTIONS", "/preflight", [("Origin", "https://other.test"),
+                                            ("Access-Control-Request-Method", "PUT")], b""),
     ("chat.test", "TRACE", "/", [], b""),
     ("chat.test", "GET", "/echo", [("X-Forwarded-For", "192.0.2.1")], b""),
     ("files.test", "POST", "/count", [], pattern(MB)),
@@ -443,10 +445,8 @@ EXPLAINED = {
         "shioko refuses absolute-form targets (a README deviation); nginx serves them",
     "chat.test GET /two-lengths": "both refuse with 400; the error pages differ",
     "chat.test GET /te-and-cl": "both refuse with 400; the error pages differ",
-    "chat.test OPTIONS *": "shioko forwards OPTIONS * (the test upstream answers 501); "
-                           "nginx refuses it with 400",
-    "chat.test TRACE /": "shioko forwards TRACE (the test upstream answers 501); "
-                         "nginx refuses it with 405",
+    "chat.test OPTIONS *": "both refuse it with 400; the error pages differ",
+    "chat.test TRACE /": "both refuse it with 405; the error pages differ",
     "chat.test GET /echo": "shioko adds Via and always says Connection: close upstream",
     "port 80 GET /x?y": "both redirect with 301; the bodies differ",
     "port 80 GET /": "both answer 404; the bodies differ",

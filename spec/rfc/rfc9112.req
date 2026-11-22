@@ -84,12 +84,12 @@
 
 @ 3.2
 > Recipients of an invalid request-line SHOULD respond with either a 400 (Bad Request) error or a 301 (Moved Permanently) redirect with the request-target properly encoded.
-= code reject with 400 a request line that is not exactly method SP request-target SP HTTP-version CRLF, whose target is neither origin form (starting with "/") nor "*" with OPTIONS, or that holds a bare CR or LF
+= code reject with 400 a request line that is not exactly method SP request-target SP HTTP-version CRLF, whose target is not in origin form (starting with "/"), or that holds a bare CR or LF
 = test request_lines
 = test request_heads
 = test requests_we_refuse_and_why
 = row step idle close plain fail:400 => closed close plain error:400
-= code answer 400 to a request line whose target is not origin form (or "*" with OPTIONS) or holds anything but visible ASCII characters
+= code answer 400 to a request line whose target is not origin form or holds anything but visible ASCII characters
 = test request_lines
 = test request_line_is_sound
 = deviation PLAN 6, known departures: a target may hold visible ASCII characters the URI grammar forbids (| ^ [ ] { } ` " < > \) because browsers send them unencoded; such a request line is accepted and its target forwarded as received, only the redirect location encodes them
@@ -117,7 +117,7 @@
 
 @ 3.2.1
 > When making a request directly to an origin server, other than a CONNECT or server-wide OPTIONS request (as detailed below), a client MUST send only the absolute path and query components of the target URI as the request-target.
-= code accept only a request-target in origin form (or "*" with OPTIONS) and write it upstream as received, so the upstream only ever gets origin-form or asterisk-form
+= code accept only a request-target in origin form and write it upstream as received, so the upstream only ever gets origin-form
 = test request_lines
 = test requests_we_refuse_and_why
 = test the_request_head_is_written_by_us
@@ -149,7 +149,7 @@
 
 @ 3.2.4
 > When a client wishes to request OPTIONS for the server as a whole, as opposed to a specific named resource of that server, the client MUST send only "*" (%x2A) as the request-target.
-= peer client: nothing to do; "*" is accepted with OPTIONS only (400 otherwise) and written upstream as received
+= peer client: nothing to do; "*" is refused with 400 even with OPTIONS, as nginx refuses it (PLAN 6, known departures)
 > If a proxy receives an OPTIONS request with an absolute-form of request-target in which the URI has an empty path and no query component, then the last proxy on the request chain MUST send a request-target of "*" when it forwards the request to the indicated origin server.
 = peer forward proxy: shioko is not a proxy on an absolute-form chain; it answers an absolute-form target with 400
 

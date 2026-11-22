@@ -103,7 +103,7 @@ At(phase) == [phase |-> phase, keep |-> FALSE, upgrade |-> FALSE]
 \* The statuses of the responses we write ourselves: an ACME token (200),
 \* the redirect to HTTPS (301), and the errors.
 OwnAnswers     == {"200", "301"}
-ClientErrors   == {"400", "403", "404", "413", "414", "421", "431", "501"}
+ClientErrors   == {"400", "403", "404", "405", "413", "414", "421", "431", "501"}
 UpstreamErrors == {"502", "504"}
 OwnStatuses    == OwnAnswers \cup ClientErrors \cup UpstreamErrors
 

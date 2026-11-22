@@ -286,7 +286,7 @@
 
 @ 7.1
 > These forms MUST NOT be used with other methods.
-= peer client: a target that is not origin-form, "*" with a method other than OPTIONS, and any CONNECT are refused with 400
+= peer client: a target that is not origin-form ("*" included, even with OPTIONS) and any CONNECT are refused with 400
 = row step idle close plain fail:400 => closed close plain error:400
 
 @ 7.2
@@ -550,9 +550,9 @@
 = test response_intact
 = test acme_tokens_are_served_from_the_directory_for_any_host
 > An origin server that receives a request method that is unrecognized or not implemented SHOULD respond with the 501 (Not Implemented) status code.
-= peer origin server (upstream): nothing to do; shioko forwards any method token unchanged, apart from CONNECT and TRACE with a body (400) and a method over 32 characters (501)
+= peer origin server (upstream): nothing to do; shioko forwards any method token unchanged, apart from CONNECT (400), TRACE (405) and a method over 32 characters (501)
 > An origin server that receives a request method that is recognized and implemented, but not allowed for the target resource, SHOULD respond with the 405 (Method Not Allowed) status code.
-= peer origin server (upstream): nothing to do; shioko forwards any method token unchanged, apart from CONNECT and TRACE with a body, which it refuses with 400
+= peer origin server (upstream): nothing to do; shioko forwards any method token unchanged, apart from CONNECT (400) and TRACE, which it refuses with 405 as nginx does
 
 @ 9.2.1
 > A user agent SHOULD distinguish between safe and unsafe methods when presenting potential actions to a user, such that the user can be made aware of an unsafe action before it is requested.
@@ -657,7 +657,7 @@
 
 @ 9.3.7
 > A server generating a successful response to OPTIONS SHOULD send any header that might indicate optional features implemented by the server and applicable to the target resource (e.g., Allow), including potential extensions not defined by this specification.
-= peer origin server (upstream): nothing to do; shioko generates no successful OPTIONS response, an OPTIONS request (also with target "*") is forwarded to the site's upstream unchanged
+= peer origin server (upstream): nothing to do; shioko generates no successful OPTIONS response, an OPTIONS request for a path is forwarded to the site's upstream unchanged ("*" is refused with 400)
 > A proxy MUST NOT generate a Max-Forwards header field while forwarding a request unless that request was received with a Max-Forwards field.
 = peer forward proxy: nothing to do
 = code never add a Max-Forwards field to a forwarded request
@@ -667,16 +667,17 @@
 
 @ 9.3.8
 > The final recipient of the request SHOULD reflect the message received, excluding some fields described below, back to the client as the content of a 200 (OK) response.
-= peer origin server (upstream): TRACE without a body is forwarded like any method and the upstream reflects it
-= deviation with Max-Forwards: 0 shioko would be the final recipient, but Max-Forwards is not processed and the request is forwarded (PLAN 6, known departures)
+= deviation TRACE is refused with 405 and never reaches the upstream, as nginx refuses it: reflecting a request would show its credentials to whatever page sent it (PLAN 6, known departures)
+= test requests_we_refuse_and_why
 > A client MUST NOT generate fields in a TRACE request containing sensitive data that might be disclosed by the response.
-= peer client: nothing to do; the fields shioko adds to a forwarded TRACE (X-Real-IP, X-Forwarded-For, X-Forwarded-Proto, Via) hold only the client's own address, the scheme and the pseudonym "shioko"
+= peer client: nothing to do; shioko never forwards TRACE
 > The final recipient of the request SHOULD exclude any request fields that are likely to contain sensitive data when that recipient generates the response content.
-= peer origin server (upstream): nothing to do; shioko is never the final recipient of a TRACE (Max-Forwards is not processed, PLAN 6, known departures)
+= code shioko is the final recipient of every TRACE and answers it with 405, reflecting nothing
+= test requests_we_refuse_and_why
 > A client MUST NOT send content in a TRACE request.
-= peer client: a TRACE request with a body is refused with 400
-= row step idle close plain fail:400 => closed close plain error:400
-= code refuse TRACE with a body (Content-Length above zero or chunked) with 400, so shioko never sends content in a TRACE request to the upstream
+= peer client: a TRACE request is refused with 405, with a body or without
+= row step idle close plain fail:405 => closed close plain error:405
+= code refuse every TRACE with 405, so shioko never sends a TRACE request, with content or without, to the upstream
 = test requests_we_refuse_and_why
 
 @ 10.1.1
@@ -774,7 +775,8 @@
 
 @ 10.2.1
 > An origin server MUST generate an Allow header field in a 405 (Method Not Allowed) response and MAY do so in any other response.
-= peer origin server: nothing to do, an upstream 405 is relayed as received; shioko itself never generates 405 (PLAN section 6 lists its statuses)
+= deviation shioko's own 405, for TRACE, carries no Allow field, as nginx's does not: which methods the upstream's resource supports is not known to it (PLAN 6, known departures)
+= test requests_we_refuse_and_why
 > A proxy MUST NOT modify the Allow header field -- it does not need to understand all of the indicated methods in order to handle them according to the generic message handling rules.
 = unused forward-proxy role: shioko is a gateway, not a proxy chosen by the client
 = code relay the Allow field of an upstream response unchanged
@@ -1142,7 +1144,7 @@
 
 @ 15.5.6
 > The origin server MUST generate an Allow header field in a 405 response containing a list of the target resource's currently supported methods.
-= peer origin server: nothing to do, an upstream 405 is relayed as received; shioko itself never generates 405
+= deviation shioko's own 405, for TRACE, carries no Allow field, as nginx's does not (PLAN 6, known departures)
 
 @ 15.5.7
 > The server SHOULD generate content containing a list of available representation characteristics and corresponding resource identifiers from which the user or user agent can choose the one most appropriate.

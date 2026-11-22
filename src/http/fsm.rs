@@ -330,6 +330,6 @@ mod tests {
             }
             rows += 1;
         }
-        assert_eq!(rows, 753);
+        assert_eq!(rows, 781);
     }
 }

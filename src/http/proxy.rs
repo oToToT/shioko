@@ -284,10 +284,12 @@ fn judge<'a, K: Connect>(
     if framing == Framing::Unsupported || request.method.len() > parse::METHOD_LIMIT {
         return Err(501);
     }
-    let has_body = framing == Framing::Chunked || (framing == Framing::Length && length > 0);
-    if request.method == b"TRACE" && has_body {
-        return Err(400);
+    // TRACE is refused, as nginx refuses it: it would echo the request,
+    // credentials and all, back to whatever page sent it.
+    if request.method == b"TRACE" {
+        return Err(405);
     }
+    let has_body = framing == Framing::Chunked || (framing == Framing::Length && length > 0);
 
     let site = match context.tls_site {
         // The handshake chose the site, and with it the allowlist that was

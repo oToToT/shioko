@@ -69,8 +69,8 @@ pub struct RequestLine<'a> {
 
 /// Takes a request line apart, or says which status refuses it.
 ///
-/// The target must be in origin form, or `*` with OPTIONS, and hold only
-/// visible ASCII characters. Some of those may not appear in a URI (`|`,
+/// The target must be in origin form and hold only visible ASCII
+/// characters; `*` is refused, even with OPTIONS, as nginx refuses it. Some of those may not appear in a URI (`|`,
 /// `^`, `[`, `{`, ...), but browsers send them unencoded, so they are
 /// accepted and passed on as received. CONNECT is refused whatever its
 /// target. A method that is too long is refused later, once the fields are
@@ -85,9 +85,7 @@ pub fn request_line(line: &[u8]) -> Result<RequestLine<'_>, u16> {
     if !is_token(method) || method == b"CONNECT" {
         return Err(400);
     }
-    let origin_form = target.first() == Some(&b'/');
-    let asterisk_form = target == b"*" && method == b"OPTIONS";
-    if !(origin_form || asterisk_form) || !target.iter().all(|&b| is_visible(b)) {
+    if target.first() != Some(&b'/') || !target.iter().all(|&b| is_visible(b)) {
         return Err(400);
     }
     let version = version(protocol).ok_or(400u16)?;
@@ -422,7 +420,7 @@ mod proofs {
         let (bytes, len) = any_bytes::<N>();
         if let Ok(parsed) = request_line(&bytes[..len]) {
             assert!(is_token(parsed.method));
-            assert!(parsed.target[0] == b'/' || parsed.target == b"*");
+            assert!(parsed.target[0] == b'/');
             assert!(parsed.target.iter().all(|&b| b > b' ' && b < 0x7f));
             assert!(parsed.method.len() + parsed.target.len() + 10 == len);
         }
@@ -522,7 +520,7 @@ mod tests {
         assert_eq!(ok("GET / HTTP/1.1"), Ok(Version::V11));
         assert_eq!(ok("GET /a?b=c HTTP/1.0"), Ok(Version::V10));
         assert_eq!(ok("GET / HTTP/1.2"), Ok(Version::V11));
-        assert_eq!(ok("OPTIONS * HTTP/1.1"), Ok(Version::V11));
+        assert_eq!(ok("OPTIONS * HTTP/1.1"), Err(400));
         // The target form.
         assert_eq!(ok("GET * HTTP/1.1"), Err(400));
         assert_eq!(ok("GET http://example.org/ HTTP/1.1"), Err(400));
