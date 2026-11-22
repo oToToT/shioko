@@ -19,10 +19,11 @@
 (* their effect. A failed write is allowed only once the client has reset  *)
 (* the connection.                                                         *)
 (*                                                                         *)
-(* Some of what a record is cannot be seen from outside, chiefly whether   *)
-(* we can serve a ClientHello: there, any refusal fits as well, and what   *)
-(* we sent back decides. Everything else about a record is fixed by the    *)
-(* trace, as the rules in src/tls/conn.rs would read it.                   *)
+(* What a record is, is fixed by the trace, as the rules in               *)
+(* src/tls/conn.rs would read it. Whether a ClientHello can be served, and *)
+(* with which alert it must be refused if not, tools/tlstrace.py works out *)
+(* itself, from the RFCs and shioko's configuration, and the trace must    *)
+(* show exactly that.                                                      *)
 (***************************************************************************)
 EXTENDS Handshake, Recorded, TLC
 
@@ -49,19 +50,24 @@ Arrived(k) == IF OutLeft THEN In[k].pos < NextOut.pos ELSE TRUE
 \* The client reset the connection, so writes may fail.
 Reset == \E k \in DOMAIN In : In[k].what = "reset" /\ Arrived(k)
 
-Refusals == {<<"invalid", a>> : a \in Alerts \ {"close_notify"}}
-
 \* What the state machine may be told about a record it can read, from what
-\* the record held (its classification by tools/tlstrace.py).
-Content(p, c) ==
+\* the record held (its classification by tools/tlstrace.py). A ClientHello
+\* comes with two verdicts, worked out by tools/tlstrace.py from the RFCs and
+\* shioko's configuration rather than from its code: as a first ClientHello,
+\* and as a second one, after our HelloRetryRequest; the phase says which
+\* applies. Each is that it can be served, and how, or the alert that must
+\* refuse it.
+Content(p, e) ==
+    LET c   == IF fsm.phase = "retry" THEN e.c2 ELSE e.c
+        why == IF fsm.phase = "retry" THEN e.why2 ELSE e.why IN
     CASE c \in {"ccs", "close_notify", "alert", "data", "empty_data", "fragment",
                "other"} ->
             {<<p, c>>}
       [] c \in {"hello", "hello_retry", "hello_early", "hello_retry_early"} ->
-            IF fsm.phase \in {"start", "retry"} THEN {<<p, c>>} \cup Refusals
+            IF fsm.phase \in {"start", "retry"} THEN {<<p, c>>} ELSE {<<p, "other">>}
+      [] c = "refused" ->
+            IF fsm.phase \in {"start", "retry"} THEN {<<"invalid", why>>}
             ELSE {<<p, "other">>}
-      [] c = "hello_garbled" ->
-            IF fsm.phase \in {"start", "retry"} THEN Refusals ELSE {<<p, "other">>}
       [] c \in {"finished", "finished_bad"} ->
             IF fsm.phase = "wait_finished" THEN {<<p, c>>} ELSE {<<p, "other">>}
       [] c = "finished_garbled" ->
@@ -85,13 +91,13 @@ Explain(e) ==
     IF e.what \in {"end", "reset"} THEN {<<"close", "">>}
     ELSE IF e.what = "refused" THEN {<<"invalid", e.c>>}
     ELSE IF rd.level = "plain" THEN
-        IF e.outer = 23 THEN {<<"plain", "data">>} ELSE Content("plain", e.c)
+        IF e.outer = 23 THEN {<<"plain", "data">>} ELSE Content("plain", e)
     ELSE IF e.outer = 23 THEN
-        IF e.key = rd.level /\ e.gen = rd.gen THEN Content("protected", e.c)
+        IF e.key = rd.level /\ e.gen = rd.gen THEN Content("protected", e)
         ELSE {<<"undecryptable", "">>}
     \* Only the dummy ChangeCipherSpec and alerts are read unencrypted now.
     ELSE IF e.outer = 22 THEN {<<"plain", "other">>}
-    ELSE Content("plain", e.c)
+    ELSE Content("plain", e)
 
 \* How much early data is skipped before the connection is given up.
 EarlyLimit == 16384

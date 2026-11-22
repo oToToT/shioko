@@ -41,5 +41,5 @@ echo "== recorded runs against spec/Handshake.tla"
 cd "$work/rec"
 python3 "$tools/tlstrace.py" check "$work/keylog" */
 if [ -d test-tls13-keyupdate ]; then
-    python3 "$tools/tlstrace.py" selftest "$work/keylog" test-tls13-keyupdate
+    python3 "$tools/tlstrace.py" selftest "$work/keylog" test-tls13-keyupdate test-tls13-invalid-ciphers
 fi

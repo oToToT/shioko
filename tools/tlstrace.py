@@ -13,7 +13,7 @@ checks against spec/Handshake.tla (see spec/HandshakeTrace.tla).
         For each DIR, writes the module and has TLC check its traces with
         spec/HandshakeTrace.tla; says which were not accepted and how far
         each got. Needs `tlc` on the PATH, or TLA2TOOLS set to tla2tools.jar.
-    tlstrace.py selftest KEYLOG DIR
+    tlstrace.py selftest KEYLOG DIR...
         Shows that the check can fail: changes traces from DIR the way a
         server with a bug would have behaved (see BROKEN), and insists that
         TLC rejects every changed trace and accepts the originals.
@@ -194,33 +194,209 @@ def vectors(data, at, width):
     return data[at + width:at + width + n], at + width + n
 
 
-def hello_facts(message):
-    """(offers early data, has a share we can use: X25519 or
-    X25519MLKEM768) of a ClientHello, or None if it does not parse."""
+# What tools/tlsfuzzer.sh configures shioko with: one site, no allowlist.
+SITES = (b"site.test",)
+
+TLS13, CHACHA20_POLY1305, ECDSA_P256 = 0x0304, 0x1303, 0x0403
+X25519, X25519MLKEM768 = 0x001d, 0x11ec
+SHARE_LENGTH = {X25519: 32, X25519MLKEM768: 1216}
+# The X25519 public values of small order (RFC 7748, and the list
+# libsodium refuses): their shared secret is all zeros.
+P25519 = 2 ** 255 - 19
+SMALL_ORDER = {0, 1, P25519 - 1,
+               325606250916557431795983626356110631294008115727848805560023387167927233504,
+               39382357235489614581723060781553021112529911719440698176882885853963445705823}
+
+
+class Refused(Exception):
+    """A ClientHello shioko must refuse, with this alert."""
+
+
+class Reader:
+    """A cursor over bytes that refuses to read past their end."""
+
+    def __init__(self, data):
+        self.data, self.at = data, 0
+
+    def take(self, n):
+        if self.at + n > len(self.data):
+            raise Refused("decode_error")
+        self.at += n
+        return self.data[self.at - n:self.at]
+
+    def number(self, width):
+        return int.from_bytes(self.take(width), "big")
+
+    def vector(self, width):
+        return Reader(self.take(self.number(width)))
+
+    def empty(self):
+        return self.at == len(self.data)
+
+    def rest(self):
+        return self.data[self.at:]
+
+
+def u16s(r):
+    """A list of two-byte values that fills r; it must not be empty."""
+    rest = r.rest()
+    if not rest or len(rest) % 2:
+        raise Refused("decode_error")
+    r.at = len(r.data)
+    return [int.from_bytes(rest[i:i + 2], "big") for i in range(0, len(rest), 2)]
+
+
+def hello_verdict(message, first=None):
+    """What shioko must make of a ClientHello, worked out here from RFC 8446,
+    RFC 10024 and its configuration, without its code: (classification,
+    facts). The classification is "hello", "hello_retry", "hello_early" or
+    "hello_retry_early" for one it can serve, or Refused's alert for one it
+    must refuse. `first` is the facts of the ClientHello our
+    HelloRetryRequest answered, for a second one; facts are what a second
+    ClientHello must then match. The checks go in shioko's order, which
+    decides the alert when more than one applies (src/tls/msgs.rs)."""
+    r = Reader(message)
+    r.take(1)
+    body = r.vector(3)
+    if not r.empty():
+        raise Refused("decode_error")
+    legacy = body.number(2)
+    random = body.take(32)
+    session_id = body.vector(1).rest()
+    if len(session_id) > 32:
+        raise Refused("decode_error")
+    suites = u16s(body.vector(2))
+    compression = body.vector(1).rest()
+    if not compression:
+        raise Refused("decode_error")
+    if body.empty():
+        raise Refused("protocol_version")
+    extensions = body.vector(2)
+    if not body.empty():
+        raise Refused("decode_error")
+    found, repeated, psk_last = [], False, True
+    while not extensions.empty():
+        kind = extensions.number(2)
+        data = extensions.vector(2).rest()
+        repeated |= any(k == kind for k, _ in found)
+        psk_last &= not any(k == 41 for k, _ in found)
+        found.append((kind, data))
+
+    def get(kind):
+        return next((data for k, data in found if k == kind), None)
+
+    def extension(kind, read):
+        data = get(kind)
+        if data is None:
+            return None
+        r = Reader(data)
+        value = read(r)
+        if value is None or not r.empty():
+            raise Refused("decode_error")
+        return value
+
+    def key_shares(r):
+        entries, out = r.vector(2), []
+        while not entries.empty():
+            group = entries.number(2)
+            out.append((group, entries.vector(2).rest()))
+        return out
+
+    def server_name(r):
+        names, name, two = r.vector(2), None, False
+        while not names.empty():
+            kind = names.number(1)
+            entry = names.vector(2).rest()
+            if kind == 0:
+                two |= name is not None
+                name = entry
+        return (name, two) if name else None
+
+    def alpn(r):
+        protocols, http11 = r.vector(2), False
+        if protocols.empty():
+            return None
+        while not protocols.empty():
+            name = protocols.vector(1).rest()
+            if not name:
+                return None
+            http11 |= name == b"http/1.1"
+        return http11
+
+    # 1. It parses, the extensions we read included.
+    versions = extension(43, lambda r: u16s(r.vector(1)))
+    signatures = extension(13, lambda r: u16s(r.vector(2)))
+    groups = extension(10, lambda r: u16s(r.vector(2)))
+    shares = extension(51, key_shares)
+    name = extension(0, server_name)
+    http11 = extension(16, alpn)
+    early = extension(42, lambda r: True) is not None
+    # 2. TLS 1.3, and nothing as old as SSL 3.0.
+    if versions is None or TLS13 not in versions or legacy <= 0x0300:
+        raise Refused("protocol_version")
+    # 3. What may not be there, or not like this.
+    if compression != b"\0" or repeated or get(44) is not None or not psk_last \
+            or (name is not None and name[1]) \
+            or (shares is not None and any(not key for _, key in shares)):
+        raise Refused("illegal_parameter")
+    if get(41) is not None and get(45) is None:
+        raise Refused("missing_extension")
+    # 4. What must be there.
+    if signatures is None or groups is None or shares is None or name is None:
+        raise Refused("missing_extension")
+    # 5. What shioko can do.
+    if CHACHA20_POLY1305 not in suites or ECDSA_P256 not in signatures \
+            or not (X25519 in groups or X25519MLKEM768 in groups):
+        raise Refused("handshake_failure")
+    retry_group = X25519 if X25519 in groups else X25519MLKEM768
+    # 6. The key shares: one per group, offered groups only, ours of the
+    # right length. X25519MLKEM768 is used before X25519.
+    share = None
+    for index, (group, key) in enumerate(shares):
+        if any(g == group for g, _ in shares[:index]) or group not in groups \
+                or (group in SHARE_LENGTH and len(key) != SHARE_LENGTH[group]):
+            raise Refused("illegal_parameter")
+        if group == X25519MLKEM768 or (group == X25519 and share is None):
+            share = (group, key)
+    # 7. ALPN, if offered, must offer http/1.1.
+    if http11 is False:
+        raise Refused("no_application_protocol")
+    # The site, which has no allowlist.
+    if name[0].lower() not in SITES:
+        raise Refused("unrecognized_name")
+    # A second ClientHello repeats the first but for what may change, and
+    # brings exactly the share asked for (RFC 8446 4.1.2).
+    kept = (legacy, random, session_id, tuple(suites), compression,
+            tuple((k, d) for k, d in found if k not in (51, 42, 41, 21)))
+    if first is not None and (kept != first["kept"] or len(shares) != 1
+                              or share is None or share[0] != first["group"]):
+        raise Refused("illegal_parameter")
+    facts = dict(kept=kept, group=retry_group)
+    suffix = "_early" if early else ""
+    if share is None:
+        return "hello_retry" + suffix, facts
+    group, key = share
+    # The X25519 part may not be of small order, and the ML-KEM key must
+    # pass the check of FIPS 203 section 7.2: every coefficient below q.
+    u = int.from_bytes(key[-32:], "little") & ((1 << 255) - 1)
+    if u % P25519 in SMALL_ORDER:
+        raise Refused("illegal_parameter")
+    if group == X25519MLKEM768:
+        t = key[:1152]
+        for i in range(0, len(t), 3):
+            b0, b1, b2 = t[i], t[i + 1], t[i + 2]
+            if (b0 | (b1 & 0x0f) << 8) >= 3329 or (b1 >> 4 | b2 << 4) >= 3329:
+                raise Refused("illegal_parameter")
+    return "hello" + suffix, facts
+
+
+def judged(message, first=None):
+    """hello_verdict as (classification, refusal's alert or "", facts)."""
     try:
-        body = message[4:]
-        at = 2 + 32
-        _, at = vectors(body, at, 1)
-        _, at = vectors(body, at, 2)
-        _, at = vectors(body, at, 1)
-        extensions, at = vectors(body, at, 2)
-        early = share = False
-        i = 0
-        while i < len(extensions):
-            kind = int.from_bytes(extensions[i:i + 2], "big")
-            data, i = vectors(extensions, i + 2, 2)
-            if kind == 42:
-                early = True
-            if kind == 51:
-                shares, _ = vectors(data, 0, 2)
-                j = 0
-                while j < len(shares):
-                    group = int.from_bytes(shares[j:j + 2], "big")
-                    key, j = vectors(shares, j + 2, 2)
-                    share |= (group, len(key)) in ((0x1d, 32), (0x11ec, 1216))
-        return early, share
-    except (ValueError, IndexError):
-        return None
+        c, facts = hello_verdict(message, first)
+        return c, "", facts
+    except Refused as refused:
+        return "refused", refused.args[0], None
 
 
 # ------------------------------------------------------------ the decoder
@@ -244,6 +420,8 @@ class Connection:
         self.incoming = b""   # handshake bytes from the client, not yet whole
         self.outgoing = b""   # and from us
         self.flight = []      # the types of our flight's messages so far
+        self.retry_facts = None   # of the ClientHello that earns a HelloRetryRequest
+        self.hello = {}           # the verdicts on the ClientHello just read
 
     # -- epochs: ("handshake", 0), ("data", n)
 
@@ -290,7 +468,9 @@ class Connection:
                 entry["c"] = "nocontent"
                 return self.entries.append(entry)
             content, inner = plain[:-1], plain[-1]
+        self.hello = {}
         entry["c"] = self.classify(inner, content, kind != 23)
+        entry.update(self.hello)
         self.entries.append(entry)
 
     def classify(self, inner, content, plain):
@@ -340,12 +520,16 @@ class Connection:
             self.transcript = message
         elif self.transcript.startswith(b"\xfe"):
             self.transcript += message  # after our HelloRetryRequest
-        facts = hello_facts(message)
-        if facts is None:
-            return "hello_garbled"
-        early, share = facts
-        return ("hello" if share else "hello_retry") + \
-            ("_early" if early else "")
+        # Its verdict as a first ClientHello, and as a second one, after a
+        # HelloRetryRequest; the trace spec takes the one its phase calls for.
+        c, why, facts = judged(message)
+        c2, why2 = c, why
+        if self.retry_facts is not None:
+            c2, why2, _ = judged(message, self.retry_facts)
+        elif c.startswith("hello_retry"):
+            self.retry_facts = facts
+        self.hello = dict(why=why, c2=c2, why2=why2)
+        return c
 
     # -- what we sent
 
@@ -529,9 +713,9 @@ def decode(path, keylog):
 
 # -------------------------------------------------------- writing the module
 
-IN_FIELDS = ["pos", "what", "sealed", "outer", "key", "gen", "c", "size"]
+IN_FIELDS = ["pos", "what", "sealed", "outer", "key", "gen", "c", "why", "c2", "why2", "size"]
 OUT_FIELDS = ["pos", "what", "key", "gen", "seq", "kind", "more", "alert"]
-DEFAULTS = dict(sealed=False, outer=0, key="none", gen=0, c="", size=0,
+DEFAULTS = dict(sealed=False, outer=0, key="none", gen=0, c="", why="", c2=None, why2="", size=0,
                 seq=0, kind="", more=False, alert="")
 
 
@@ -545,6 +729,8 @@ def tla(value):
 
 def entry_tla(entry):
     fields = IN_FIELDS if entry["dir"] == "in" else OUT_FIELDS
+    if entry["dir"] == "in" and entry.get("c2") is None:
+        entry = dict(entry, c2=entry.get("c", ""), why2=entry.get("why", ""))
     return "[" + ", ".join("{0} |-> {1}".format(f, tla(entry.get(f, DEFAULTS.get(f))))
                            for f in fields) + "]"
 
@@ -705,6 +891,16 @@ BROKEN = {
         lambda t: moved(t, first(t, lambda e: e["dir"] == "out" and
                                  e["what"] == "end"),
                         first(t, ours("alert"))),
+    "a ClientHello it can serve is refused":
+        lambda t: None if first(t, ours("server_hello")) is None else
+        t[:first(t, ours("server_hello"))]
+        + [dict(t[first(t, ours("server_hello"))], kind="alert", alert="handshake_failure",
+                more=False)],
+    "a ClientHello is refused with another alert than it must be":
+        lambda t: None if first(t, lambda e: e["dir"] == "in" and e.get("c") == "refused") is None
+        else changed(t, first(t, ours("alert")),
+                     alert="illegal_parameter" if t[first(t, ours("alert"))]["alert"] != "illegal_parameter"
+                     else "decode_error") if first(t, ours("alert")) is not None else None,
     "data is sent after an alert":
         lambda t: None if first(t, ours("alert")) is None else
         t[:first(t, ours("alert")) + 1] + [dict(t[first(t, ours("data"))], seq=99)]
@@ -713,9 +909,10 @@ BROKEN = {
 }
 
 
-def selftest(keylog_path, directory):
+def selftest(keylog_path, directories):
     """True if TLC accepts the recorded traces and rejects each broken one."""
-    traces = recorded(keylog_path, [directory])
+    directory = " ".join(directories)
+    traces = recorded(keylog_path, directories)
     broken = []
     for what, change in BROKEN.items():
         for name, entries in traces:
@@ -727,7 +924,7 @@ def selftest(keylog_path, directory):
             print("selftest: no trace in {0} to break as: {1}".format(
                 directory, what))
             return False
-    work = directory.rstrip("/") + ".selftest"
+    work = directories[0].rstrip("/") + ".selftest"
     result = run_tlc(work, keylog_path, [], traces + broken)
     if result is None:
         return False
@@ -754,6 +951,6 @@ if __name__ == "__main__":
     elif sys.argv[1:2] == ["check"]:
         sys.exit(0 if check(sys.argv[2], sys.argv[3:]) else 1)
     elif sys.argv[1:2] == ["selftest"]:
-        sys.exit(0 if selftest(sys.argv[2], sys.argv[3]) else 1)
+        sys.exit(0 if selftest(sys.argv[2], sys.argv[3:]) else 1)
     else:
         sys.exit(__doc__)

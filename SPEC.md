@@ -718,10 +718,14 @@ are summarised at the end of sections 5 and 6.
    machine, keys, both threads, the write lock) that reads the client's
    records in order, each only after it arrived, and puts exactly our
    records on the wire: same kind, same alert, same keys and sequence
-   number. What cannot be seen from outside (whether a ClientHello can be
-   served) is left open and decided by what we sent. A self-test changes
-   recorded traces the way nine kinds of broken server would have behaved
-   and insists TLC rejects each.
+   number. Whether a ClientHello can be served, and if not with which
+   alert it must be refused, the decoder works out itself, from RFC 8446,
+   RFC 10024 and shioko's configuration rather than from its code, as a
+   first ClientHello and as a second one; the trace must show exactly that.
+   A self-test changes recorded traces the way eleven kinds of broken
+   server would have behaved (among them one that refuses a ClientHello it
+   can serve, and one that refuses with the wrong alert) and insists TLC
+   rejects each.
 4. **A whole run, checked against `Server.tla`.** A development build
    (`--features record`, never deployed) logs each step of the spec as its
    thread takes it: slots taken and given back, connections accepted,
