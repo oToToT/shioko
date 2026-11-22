@@ -1786,6 +1786,20 @@ fn bug_connect_with_a_path_was_forwarded() {
     assert!(sent.is_empty());
 }
 
+/// Bug (found in review): a fully qualified name in `Host`, with its
+/// trailing dot (`site.test.`), matched no site: plain HTTP got 404 and a
+/// TLS connection 421, where nginx serves the site. The dot is now left out
+/// when the site is chosen; the upstream still gets `Host` as sent.
+#[test]
+fn bug_a_host_with_a_trailing_dot_matched_no_site() {
+    let request = "GET / HTTP/1.1\r\nHost: site.test.\r\n\r\n";
+    for talk in [Talk::default(), Talk { tls: Some("site.test"), ..Talk::default() }] {
+        let (received, sent) = talk.go(request, &[PLAIN_OK]);
+        assert!(received.starts_with("HTTP/1.1 200 "), "{received:?}");
+        assert!(sent[0].contains("\r\nHost: site.test.\r\n"), "{:?}", sent[0]);
+    }
+}
+
 /// Bug: a HEAD request refused while its head was read (431, a bad field,
 /// a too long line) got an error response with a body.
 #[test]

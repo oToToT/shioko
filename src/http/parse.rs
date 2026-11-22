@@ -173,8 +173,9 @@ pub fn chunk_size(line: &[u8]) -> Option<u64> {
 
 /// What the `Host` field names, without the port: a host name (`reg-name`),
 /// an IPv4 address, or an IP literal in brackets, then optionally a colon
-/// and a port of at most five digits, which may be empty. An empty name is
-/// refused: there is nothing to route by.
+/// and a port of at most five digits, which may be empty. One trailing dot
+/// of a name, as in a fully qualified `example.org.`, is left out, as nginx
+/// leaves it out. An empty name is refused: there is nothing to route by.
 pub fn host(value: &[u8]) -> Option<&[u8]> {
     let (name, rest) = if value.first() == Some(&b'[') {
         let end = value.iter().position(|&b| b == b']')?;
@@ -198,7 +199,7 @@ pub fn host(value: &[u8]) -> Option<&[u8]> {
                 return None;
             }
         }
-        (name, rest)
+        (name.strip_suffix(b".").unwrap_or(name), rest)
     };
     let port_ok = match rest {
         [] => true,
@@ -685,7 +686,10 @@ mod tests {
         assert_eq!(name("a:"), Some("a".into()));
         assert_eq!(name("under_score.test"), Some("under_score.test".into()));
         assert_eq!(name("caf%C3%A9.test"), Some("caf%C3%A9.test".into()));
-        for bad in ["", ":80", "a:b", "a:123456", "a:1:2", "a b", "a/b", "user@a", "[]", "[::1", "[::1]x", "[g::]", "a%2", "a%zz", "a?b", "a#b"] {
+        assert_eq!(name("example.org."), Some("example.org".into()));
+        assert_eq!(name("example.org.:443"), Some("example.org".into()));
+        assert_eq!(name("example.org.."), Some("example.org.".into()), "only one dot is left out");
+        for bad in ["", ".", ".:80", ":80", "a:b", "a:123456", "a:1:2", "a b", "a/b", "user@a", "[]", "[::1", "[::1]x", "[g::]", "a%2", "a%zz", "a?b", "a#b"] {
             assert_eq!(name(bad), None, "{bad:?}");
         }
     }

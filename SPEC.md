@@ -369,7 +369,9 @@ Requests:
   from clients and from upstreams. A bare CR or LF is an error.
 - **Host** is a host name, an IPv4 address or a bracketed IP literal,
   optionally with `:port` (the port may be empty). The name is compared with
-  the site's, ignoring case; an IP literal matches no site and gets 404.
+  the site's, ignoring case and one trailing dot (`example.org.`), as nginx
+  does; an IP literal matches no site and gets 404. The upstream gets `Host`
+  as the client sent it.
 - **Bodies.** Chunk extensions are ignored (spaces before their `;` and
   non-ASCII in their values included) and trailers are read and dropped, in
   both directions. `Content-Length` may be anything up to 2^64 - 1, with any
