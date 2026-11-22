@@ -24,6 +24,13 @@ pub fn random(buf: &mut [u8]) -> Result<(), Error> {
     std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf)).map_err(|_| Error)
 }
 
+/// Overwrites a secret. Best effort: without `unsafe` the compiler is
+/// allowed to drop the write, and `black_box` only discourages that.
+pub fn wipe(bytes: &mut [u8]) {
+    bytes.fill(0);
+    std::hint::black_box(bytes);
+}
+
 /// Compare two byte strings without an early exit on the first difference.
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
@@ -172,6 +179,30 @@ pub fn mlkem768_decapsulate(private: &[u8], ciphertext: &[u8; MLKEM768_CIPHERTEX
 
 // ------------------------------------------------- ECDSA P-256 with SHA-256
 
+/// The order of the P-256 group, big-endian.
+const P256_ORDER: [u8; 32] = [
+    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
+];
+
+/// `bits2octets` of RFC 6979 section 2.3.4 for SHA-256 and P-256: the hash,
+/// read as a number, modulo the group order. A hash is less than twice the
+/// order, so one subtraction does it. Only the hash of the signed message,
+/// which is public, comes through here, so the comparison may take its time.
+fn bits2octets(hash: [u8; 32]) -> [u8; 32] {
+    if hash < P256_ORDER {
+        return hash;
+    }
+    let mut out = [0u8; 32];
+    let mut borrow = 0u16;
+    for ((o, h), n) in out.iter_mut().zip(hash).zip(P256_ORDER).rev() {
+        let [low, high] = u16::from(h).wrapping_sub(u16::from(n)).wrapping_sub(borrow).to_le_bytes();
+        *o = low;
+        borrow = u16::from(high != 0);
+    }
+    out
+}
+
 pub struct SigningKey(libcrux_ecdsa::p256::PrivateKey);
 
 impl SigningKey {
@@ -188,19 +219,43 @@ impl SigningKey {
         Ok(out)
     }
 
-    /// Sign `message` with a fresh random nonce; returns the DER signature.
+    /// Sign `message`; returns the DER signature. The nonce is derived from
+    /// the key and the message ("deterministic ECDSA", RFC 6979, which RFC
+    /// 8446 appendix C.3 recommends), so no failing random number generator
+    /// can repeat a nonce and give the key away.
     pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>, Error> {
-        // A random 32-byte value is a valid nonce except with probability
-        // about 2^-32; rejecting and retrying keeps the nonce uniform.
+        let raw = self.sign_deterministic(message).ok_or(Error)?;
+        Ok(libcrux_ecdsa::p256::Signature::from_bytes(raw).to_der().as_bytes().to_vec())
+    }
+
+    /// Raw signature with the nonce of RFC 6979 section 3.2. For P-256 with
+    /// SHA-256 qlen and hlen are both 256 bits: int2octets(x) is the key as
+    /// stored, and each candidate nonce is one HMAC output.
+    fn sign_deterministic(&self, message: &[u8]) -> Option<[u8; 64]> {
+        let x: &[u8; 32] = self.0.as_ref();
+        let h = bits2octets(sha256(message));
+        // Steps b to g.
+        let mut v = [0x01u8; HASH_LEN];
+        let mut k = hmac_sha256(&[0u8; HASH_LEN], &[&v, &[0x00], x, &h]);
+        v = hmac_sha256(&k, &[&v]);
+        k = hmac_sha256(&k, &[&v, &[0x01], x, &h]);
+        v = hmac_sha256(&k, &[&v]);
+        // Step h: candidates until one lies in [1, q-1], which the signing
+        // function checks. A candidate is outside with probability about
+        // 2^-32, so the bound only keeps the loop finite.
+        let mut signed = None;
         for _ in 0..8 {
-            let mut nonce = [0u8; 32];
-            random(&mut nonce)?;
-            if let Some(raw) = self.sign_with_nonce(message, &nonce) {
-                let signature = libcrux_ecdsa::p256::Signature::from_bytes(raw);
-                return Ok(signature.to_der().as_bytes().to_vec());
+            v = hmac_sha256(&k, &[&v]);
+            signed = self.sign_with_nonce(message, &v);
+            if signed.is_some() {
+                break;
             }
+            k = hmac_sha256(&k, &[&v, &[0x00]]);
+            v = hmac_sha256(&k, &[&v]);
         }
-        Err(Error)
+        wipe(&mut k);
+        wipe(&mut v);
+        signed
     }
 
     /// Raw signature (r followed by s), or `None` if the nonce is out of range.
@@ -513,23 +568,72 @@ mod tests {
         );
     }
 
+    /// RFC 6979 appendix A.2.5, P-256 with SHA-256: the nonce derived for
+    /// "sample" and for "test" gives exactly the RFC's signatures. (The
+    /// RFC's nonces themselves are checked above: the one for "sample"
+    /// gives that signature.)
     #[test]
-    fn ecdsa_sign_verifies_and_is_randomised() {
+    fn ecdsa_nonces_are_rfc6979_deterministic() {
+        use libcrux_ecdsa::p256::Signature;
+        let key = SigningKey::from_bytes(&arr(RFC6979_KEY)).unwrap();
+        for (message, r_s) in [
+            (
+                &b"sample"[..],
+                "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716\
+                 f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8",
+            ),
+            (
+                &b"test"[..],
+                "f1abb023518351cd71d881567b1ea663ed3efcf6c5132b354f28d3b0b7d38367\
+                 019f4113742a2b14bd25926b49c649155f267e60d3814b4c0cc84250e46f0083",
+            ),
+        ] {
+            let raw = key.sign_deterministic(message).unwrap();
+            assert_eq!(raw.to_vec(), hex(r_s));
+            let der = Signature::from_bytes(raw).to_der().as_bytes().to_vec();
+            assert_eq!(key.sign(message).unwrap(), der, "sign does not use the RFC 6979 nonce");
+        }
+    }
+
+    #[test]
+    fn bits2octets_reduces_modulo_the_order() {
+        let order = P256_ORDER;
+        let below = arr("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550");
+        assert_eq!(bits2octets(below), below);
+        assert_eq!(bits2octets([0u8; 32]), [0u8; 32]);
+        assert_eq!(bits2octets(order), [0u8; 32]);
+        let mut one = [0u8; 32];
+        one[31] = 1;
+        let order_plus_one = arr("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632552");
+        assert_eq!(bits2octets(order_plus_one), one);
+        // 2^256 - 1 - n, which borrows nowhere, and a value whose
+        // subtraction borrows through 27 bytes.
+        assert_eq!(
+            bits2octets([0xff; 32]),
+            arr("00000000ffffffff00000000000000004319055258e8617b0c46353d039cdaae")
+        );
+        assert_eq!(
+            bits2octets(arr("ffffffff01000000000000000000000000000000000000000000000000000000")),
+            arr("0000000000ffffff00000000000000004319055258e8617b0c46353d039cdaaf")
+        );
+    }
+
+    #[test]
+    fn ecdsa_sign_verifies() {
         use libcrux_ecdsa::p256::{PublicKey, Signature, verify};
         let key = SigningKey::from_bytes(&arr(RFC6979_KEY)).unwrap();
         let public = PublicKey::try_from(&key.public_key().unwrap()[1..]).unwrap();
         let message = b"TLS 1.3, server CertificateVerify";
 
         let first = key.sign(message).unwrap();
-        let second = key.sign(message).unwrap();
-        assert_ne!(first, second, "two signatures used the same nonce");
-        for der in [&first, &second] {
-            assert_eq!(der[0], 0x30, "not a DER SEQUENCE");
-            let signature = Signature::from_der(der).unwrap();
-            let hash = libcrux_sha2::Algorithm::Sha256;
-            assert!(verify(hash, message, &signature, &public).is_ok());
-            assert!(verify(hash, b"another message", &signature, &public).is_err());
-        }
+        let other = key.sign(b"another message").unwrap();
+        assert_eq!(key.sign(message).unwrap(), first, "the same message got another nonce");
+        assert_ne!(first, other, "two messages got the same signature");
+        assert_eq!(first[0], 0x30, "not a DER SEQUENCE");
+        let signature = Signature::from_der(&first).unwrap();
+        let hash = libcrux_sha2::Algorithm::Sha256;
+        assert!(verify(hash, message, &signature, &public).is_ok());
+        assert!(verify(hash, b"another message", &signature, &public).is_err());
     }
 
     #[test]

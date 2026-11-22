@@ -5,12 +5,7 @@ use crate::crypto::{self, HASH_LEN, KEY_LEN, NONCE_LEN, Sha256};
 
 pub type Secret = [u8; HASH_LEN];
 
-/// Overwrites a secret. Best effort: without `unsafe` the compiler is
-/// allowed to drop the write, and `black_box` only discourages that.
-pub fn wipe(bytes: &mut [u8]) {
-    bytes.fill(0);
-    std::hint::black_box(bytes);
-}
+pub use crate::crypto::wipe;
 
 /// HKDF-Expand-Label of RFC 8446 section 7.1.
 pub fn expand_label(secret: &Secret, label: &str, context: &[u8], out: &mut [u8]) {

@@ -1262,9 +1262,8 @@
 
 @ C.1
 > It is RECOMMENDED to use an existing CSPRNG implementation in preference to crafting a new one.
-= code take every random value (ServerHello.random, X25519 private key, ML-KEM encapsulation randomness, ECDSA nonce) from /dev/urandom with no generator of our own, and fail the handshake when the read fails (SPEC sections 4 and 5)
+= code take every random value (ServerHello.random, X25519 private key, ML-KEM encapsulation randomness) from /dev/urandom with no generator of our own, and fail the handshake when the read fails (SPEC sections 4 and 5); ECDSA nonces need no randomness (C.3)
 = test random_fills_buffer
-= test ecdsa_sign_verifies_and_is_randomised
 = test every_server_random_is_new
 
 @ C.2
@@ -1273,7 +1272,10 @@
 
 @ C.3
 > It is RECOMMENDED that implementations implement "deterministic ECDSA" as specified in [RFC6979].
-= deviation SPEC section 5, known departures: ECDSA nonces are random, read from /dev/urandom for each signature (section 7), not derived as RFC 6979 recommends; the handshake fails if the read fails
+= code derive each ECDSA nonce from the private key and the hash of the signed content as RFC 6979 section 3.2 specifies, with our HMAC-SHA256; no randomness is read for it (SPEC sections 5 and 7)
+= test ecdsa_nonces_are_rfc6979_deterministic
+= test bits2octets_reduces_modulo_the_order
+= test ecdsa_sign_verifies
 
 @ C.4
 > Clients SHOULD NOT reuse a ticket for multiple connections.

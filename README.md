@@ -170,8 +170,7 @@ it departs from in `spec/rfc/`.
   certificates.
 - The certificate chain is sent as it is in the file and never parsed, so
   nothing the RFC asks of a chain is checked.
-- ECDSA nonces are random rather than derived as RFC 6979 recommends, and
-  secrets cannot be reliably erased without `unsafe` code.
+- Secrets cannot be reliably erased without `unsafe` code.
 
 **HTTP (RFC 9110, RFC 9112)**
 

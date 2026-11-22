@@ -304,8 +304,11 @@ Handshake behaviour:
 - Every alert sent or received is logged with its description, except
   `close_notify`, which is the normal end of every connection; so is an
   alert record that is empty or malformed.
-- ECDSA nonces come from the kernel CSPRNG. If reading randomness fails, the
-  handshake fails.
+- ECDSA nonces are derived from the private key and the signed content as
+  RFC 6979 section 3.2 specifies ("deterministic ECDSA", recommended by RFC
+  8446 appendix C.3), so a failing random number generator cannot repeat a
+  nonce and give the key away. Every other random value comes from the
+  kernel CSPRNG; if reading it fails, the handshake fails.
 
 Certificates and keys:
 
@@ -328,7 +331,6 @@ Known departures from RFC 8446 (each is listed in `spec/rfc/rfc8446.req`):
 - The certificate chain is not parsed, so nothing the RFC asks of it is
   checked: its order, the X.509 version, the key usage, SHA-1 signatures,
   and the client's `signature_algorithms_cert`.
-- ECDSA nonces are random, not derived as RFC 6979 recommends.
 - Secrets are overwritten when no longer needed, but without `unsafe` code
   the compiler is free to drop such writes.
 - A ChangeCipherSpec between the pieces of a split handshake message is
@@ -513,9 +515,10 @@ Decisions:
   vectors.
 - **ECDSA signing calls the HACL\* function in `libcrux-p256` directly.** The
   `libcrux-ecdsa` wrapper can only create a nonce through its `rand` feature,
-  which pulls in `getrandom`, `libc` and more. We read the nonce from
-  `/dev/urandom` ourselves and use `libcrux-ecdsa` only for key validation
-  and DER encoding.
+  which pulls in `getrandom`, `libc` and more. We derive the nonce
+  ourselves by RFC 6979, with our HMAC-SHA256 (checked against the RFC's
+  P-256 vectors), and use `libcrux-ecdsa` only for key validation and DER
+  encoding.
 - **Vendoring.** `tools/vendor.sh` fills `vendor/`; `.cargo/config.toml`
   points Cargo at it and turns networking off. The crates that are compiled
   are stored unmodified. Cargo's lockfile also lists optional and
