@@ -1,10 +1,13 @@
-# shioko as it is deployed: the static musl release build.
+# shioko as it is deployed: the static musl release build; with FEATURES
+# set to "record", the development build that records its steps.
 FROM rust:1.95.0-slim AS build
 WORKDIR /src
 COPY rust-toolchain.toml .
 RUN rustup toolchain install
 COPY . .
-RUN --network=none cargo build --locked --release --target "$(uname -m)-unknown-linux-musl" \
+ARG FEATURES=""
+RUN --network=none cargo build --locked --release --features "$FEATURES" \
+        --target "$(uname -m)-unknown-linux-musl" \
     && cp "target/$(uname -m)-unknown-linux-musl/release/shioko" /shioko
 
 FROM debian:trixie-slim

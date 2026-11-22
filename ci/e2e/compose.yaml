@@ -35,9 +35,13 @@ services:
     networks: { inside: { ipv4_address: 10.88.0.22 } }
 
   shioko:
-    build: { context: ../.., dockerfile: ci/e2e/shioko.Dockerfile }
-    image: shioko-e2e
+    build:
+      context: ../..
+      dockerfile: ci/e2e/shioko.Dockerfile
+      args: { FEATURES: "${SHIOKO_FEATURES:-}" }
+    image: shioko-e2e${SHIOKO_FEATURES:+-$SHIOKO_FEATURES}
     user: shioko
+    environment: { SHIOKO_RECORD: /tmp/shioko.record }
     volumes:
       - certs:/certs:ro
       - ./shioko.conf:/etc/shioko/shioko.conf:ro

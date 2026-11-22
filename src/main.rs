@@ -7,12 +7,23 @@
 
 #![cfg_attr(test, allow(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+/// Records a step of spec/Server.tla in `--features record` builds; in
+/// other builds it is nothing at all.
+macro_rules! record {
+    ($($what:tt)*) => {
+        #[cfg(feature = "record")]
+        crate::record::step(&format!($($what)*));
+    };
+}
+
 mod config;
 mod crypto;
 mod http;
 mod log;
 mod net;
 mod pem;
+#[cfg(feature = "record")]
+mod record;
 mod server;
 mod stream;
 mod tls;

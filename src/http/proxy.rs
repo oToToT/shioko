@@ -594,6 +594,9 @@ impl<A: Stream, B: Stream> Drop for ShutBoth<'_, A, B> {
 /// streams are shut down, which is what stops the pump of the other
 /// direction.
 fn pump<A: Stream, B: Stream>(from: &A, to: &B, started: Instant, last: &AtomicU64) {
+    // Dropped last, once both streams are shut down.
+    #[cfg(feature = "record")]
+    let _stopped = Stopped;
     let _shut = ShutBoth(from, to);
     let millis = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut space = vec![0u8; 16 * 1024];
@@ -601,7 +604,9 @@ fn pump<A: Stream, B: Stream>(from: &A, to: &B, started: Instant, last: &AtomicU
         match from.read(&mut space) {
             Ok(n) if n > 0 => {
                 last.store(millis(), Ordering::Relaxed);
+                record!("data");
                 if to.write_all(space.get(..n).unwrap_or(&[])).is_err() {
+                    record!("write_fails");
                     return;
                 }
             }
@@ -610,11 +615,27 @@ fn pump<A: Stream, B: Stream>(from: &A, to: &B, started: Instant, last: &AtomicU
             Err(error) if stream::timed_out(&error) => {
                 let quiet = millis().saturating_sub(last.load(Ordering::Relaxed));
                 if u128::from(quiet) >= TUNNEL_IDLE.as_millis() {
+                    record!("read_ends");
                     return;
                 }
             }
-            _ => return,
+            _ => {
+                record!("read_ends");
+                return;
+            }
         }
+    }
+}
+
+/// The step `Stop` of spec/Server.tla, recorded once a pump has shut both
+/// streams down, also when it unwinds from a panic.
+#[cfg(feature = "record")]
+struct Stopped;
+
+#[cfg(feature = "record")]
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        record!("stop");
     }
 }
 
@@ -645,14 +666,24 @@ fn tunnel<C: Stream, K: Connect>(
     upstream.set_read_timeout(TUNNEL_IDLE);
     let started = Instant::now();
     let last = AtomicU64::new(0);
+    record!("tunnel");
+    #[cfg(feature = "record")]
+    let me = crate::record::who();
+    #[cfg(feature = "record")]
+    crate::record::be(me.clone(), true);
     std::thread::scope(|scope| {
-        let down = std::thread::Builder::new()
-            .spawn_scoped(scope, || pump(upstream, client, started, &last));
+        let down = std::thread::Builder::new().spawn_scoped(scope, || {
+            #[cfg(feature = "record")]
+            crate::record::be(me.replace(" up", " down"), true);
+            pump(upstream, client, started, &last);
+        });
         // Without a second thread there is no tunnel; the streams are shut
         // down when we return.
         if down.is_ok() {
             pump(client, upstream, started, &last);
         }
     });
+    #[cfg(feature = "record")]
+    crate::record::be(me, false);
     Event::Done
 }

@@ -163,6 +163,10 @@ struct WriteSide {
     /// A write failed: the stream may hold half a record, and nothing more
     /// may be sent.
     dead: bool,
+    /// Something was sent since the write lock was taken (`--features
+    /// record`: the steps TakeLock and Written of spec/Server.tla).
+    #[cfg(feature = "record")]
+    sent: bool,
 }
 
 pub struct TlsStream<'a, S: Stream> {
@@ -400,14 +404,33 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         &'g self,
         actions: Vec<Action>,
         reader: &mut ReadSide,
+        hs: Option<&mut Handshake<'_>>,
+        data: Vec<u8>,
+        mut writer: Option<MutexGuard<'g, WriteSide>>,
+        out: &[u8],
+    ) -> Result<(), ()> {
+        let result = self.carry(actions, reader, hs, data, &mut writer, out);
+        // The write lock is about to go: say whether what was sent got out.
+        #[cfg(feature = "record")]
+        if let Some(w) = writer.as_mut().filter(|w| w.sent) {
+            w.sent = false;
+            crate::record::lock_step(if w.dead { "unlock_fail" } else { "unlock_ok" });
+        }
+        result
+    }
+
+    fn carry<'g>(
+        &'g self,
+        actions: Vec<Action>,
+        reader: &mut ReadSide,
         mut hs: Option<&mut Handshake<'_>>,
         mut data: Vec<u8>,
-        mut writer: Option<MutexGuard<'g, WriteSide>>,
+        writer: &mut Option<MutexGuard<'g, WriteSide>>,
         out: &[u8],
     ) -> Result<(), ()> {
         for action in actions {
             if action.needs_write_lock() && writer.is_none() {
-                writer = Some(lock(&self.writer));
+                *writer = Some(lock(&self.writer));
             }
             match action {
                 Action::ReadKeys(level) => match (level, hs.as_deref()) {
@@ -447,6 +470,11 @@ impl<'a, S: Stream> TlsStream<'a, S> {
     fn send(&self, w: &mut WriteSide, content_type: u8, content: &[u8]) -> io::Result<()> {
         if content.is_empty() {
             return Ok(());
+        }
+        #[cfg(feature = "record")]
+        if !w.sent {
+            w.sent = true;
+            crate::record::lock_step("lock");
         }
         let mut bytes = Vec::with_capacity(content.len() + 32);
         for piece in content.chunks(record::MAX_PLAINTEXT) {

@@ -13,6 +13,9 @@ fi
 
 echo "== lint"
 cargo clippy --locked --all-targets -- -D warnings
+# The development builds, which record what the checks of recorded runs
+# need (never deployed), must stay clean too.
+cargo clippy --locked --all-targets --features keylog,record -- -D warnings
 
 echo "== test"
 # shellcheck disable=SC2086

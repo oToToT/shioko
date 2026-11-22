@@ -19,6 +19,10 @@ libcrux-ecdsa = { version = "=0.0.10", default-features = false }
 # handshake's shared secret is appended to the file named by SHIOKO_KEYLOG.
 # Never deploy a binary built with it.
 keylog = []
+# Development builds only, for checking recorded runs against
+# spec/Server.tla (tools/servertrace.py): the steps of the server's threads
+# and slots go to the file named by SHIOKO_RECORD. Never deploy it.
+record = []
 
 # The proxy tests run it on several hundred thousand scripted connections.
 [profile.test]

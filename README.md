@@ -105,6 +105,9 @@ tools/ci.sh            # all of the above in Linux containers, and tlsfuzzer
 (needs Docker and network to pull images): shioko as deployed, nginx for
 comparison, Vaultwarden, Jellyfin, a test upstream, and Pebble issuing a
 certificate to certbot through shioko. Results go to `target/e2e/`.
+`tools/e2e.sh record` does the same with a development build that logs the
+steps of its threads, and TLC checks the whole run against `spec/Server.tla`
+(`tools/servertrace.py`).
 
 `tools/ci.sh` also runs every TLS 1.3 script of tlsfuzzer against shioko
 (`ci/tlsfuzzer.Dockerfile`, `tools/tlsfuzzer.sh`). The probes expected to

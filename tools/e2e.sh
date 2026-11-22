@@ -6,13 +6,22 @@
 # (ci/e2e/e2e.py check), the comparison with nginx (parity), and on request
 # the soak runs, sampling shioko's memory, threads and file descriptors.
 #
-#   tools/e2e.sh                checks and parity
-#   tools/e2e.sh soak [MINUTES] also the soak runs (default 10 minutes each)
+#   tools/e2e.sh                  checks and parity
+#   tools/e2e.sh soak [MINUTES]   also the soak runs (default 10 minutes each)
+#   tools/e2e.sh record [MINUTES] all of it (default 1 minute each) with a
+#                                 shioko built with --features record, and
+#                                 TLC checks the run against spec/Server.tla
 #
 # Everything found goes to target/e2e/: checks.json, parity.json,
-# soak.json, resources.csv, certbot.log, shioko.log.
+# soak.json, resources.csv, certbot.log, shioko.log, shioko.record.
 set -eu
 cd "$(dirname "$0")/.."
+mode=${1:-}
+minutes=${2:-}
+if [ "$mode" = record ]; then
+    export SHIOKO_FEATURES=record
+    minutes=${minutes:-1}
+fi
 compose="docker compose -f ci/e2e/compose.yaml --profile run"
 out=target/e2e
 rm -rf "$out"
@@ -42,7 +51,7 @@ $compose run --rm client python3 e2e.py check || failed=1
 echo "== parity with nginx"
 $compose run --rm client python3 e2e.py parity
 
-if [ "${1:-}" = soak ]; then
+if [ "$mode" = soak ] || [ "$mode" = record ]; then
     echo "== soak"
     # shioko is process 1 of its container.
     echo "seconds,rss_kb,threads,fds,cpu_seconds" > "$out/resources.csv"
@@ -60,7 +69,16 @@ if [ "${1:-}" = soak ]; then
         done
     ) &
     sampler=$!
-    $compose run --rm client python3 soak.py "${2:-10}" || failed=1
+    $compose run --rm client python3 soak.py "${minutes:-10}" || failed=1
+fi
+
+if [ "$mode" = record ]; then
+    echo "== the run against spec/Server.tla"
+    $compose cp shioko:/tmp/shioko.record "$out/shioko.record"
+    docker build --quiet --file ci/e2e/tlc.Dockerfile --tag shioko-e2e-tlc ci/e2e > /dev/null
+    tlc="docker run --rm -v $PWD:/src -w /src shioko-e2e-tlc python3 tools/servertrace.py"
+    $tlc check "$out/shioko.record" || failed=1
+    $tlc selftest "$out/shioko.record" || failed=1
 fi
 
 [ "$failed" -eq 0 ] || { echo "end-to-end checks failed; see $out/"; exit 1; }

@@ -62,6 +62,7 @@ impl Slot {
             used = server.freed.wait(used).unwrap_or_else(PoisonError::into_inner);
         }
         *used = used.saturating_add(1);
+        record!("reserve");
         Slot(Arc::clone(server))
     }
 }
@@ -70,6 +71,7 @@ impl Drop for Slot {
     fn drop(&mut self) {
         let mut used = self.0.used.lock().unwrap_or_else(PoisonError::into_inner);
         *used = used.saturating_sub(1);
+        record!("release");
         self.0.freed.notify_one();
     }
 }
@@ -107,17 +109,31 @@ fn connection(server: &Server, client: TcpStream, secure: bool) {
 /// Accepts connections for ever, each served on a thread of its own;
 /// `secure` connections speak TLS.
 pub fn listen(server: &Arc<Server>, listener: &TcpListener, secure: bool) {
+    #[cfg(feature = "record")]
+    let me = format!("l{}", if secure { 443 } else { 80 });
+    #[cfg(feature = "record")]
+    crate::record::be(me.clone(), false);
     loop {
         let slot = Slot::take(server);
         match listener.accept() {
             Ok((client, _)) => {
                 let shared = Arc::clone(server);
+                #[cfg(feature = "record")]
+                let name = crate::record::connection();
+                record!("accept {name}");
+                // A slot dropped from here on is the connection's.
+                #[cfg(feature = "record")]
+                crate::record::be(format!("{name} up"), false);
                 // The slot moves into the thread. If the thread cannot be
                 // started, the closure is dropped and the slot with it.
                 let started = std::thread::Builder::new().spawn(move || {
+                    #[cfg(feature = "record")]
+                    crate::record::be(format!("{name} up"), false);
                     let _slot = slot;
                     connection(&shared, client, secure);
                 });
+                #[cfg(feature = "record")]
+                crate::record::be(me.clone(), false);
                 if let Err(error) = started {
                     server.log.error(&format!("cannot start a thread: {error}"));
                 }
