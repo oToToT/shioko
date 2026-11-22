@@ -210,11 +210,20 @@ const ALERT_NAMES: [(u8, &str); 27] = [
 /// every key of the connection.
 #[cfg(feature = "keylog")]
 fn keylog(random: &[u8; 32], shared: &[u8]) {
+    keylog_to(&std::env::var_os("SHIOKO_KEYLOG").unwrap_or_default(), random, shared);
+}
+
+/// One line per handshake, written whole: the line is made first and goes
+/// out in one write, while no other handshake writes.
+#[cfg(any(test, feature = "keylog"))]
+fn keylog_to(path: &std::ffi::OsStr, random: &[u8; 32], shared: &[u8]) {
     use std::io::Write;
+    static WRITING: Mutex<()> = Mutex::new(());
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let path = std::env::var_os("SHIOKO_KEYLOG").unwrap_or_default();
+    let line = format!("{} {}\n", hex(random), hex(shared));
+    let _writing = WRITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
-        let _ = writeln!(file, "{} {}", hex(random), hex(shared));
+        let _ = file.write_all(line.as_bytes());
     }
 }
 
@@ -771,5 +780,34 @@ mod tests {
         assert_eq!(tls.state().phase, Phase::Closed);
         // The next write fails at once.
         assert!(tls.write_all(b"y").is_err());
+    }
+
+    /// Bug (found by tlsfuzzer in CI): the key log of the test build was
+    /// written with `writeln!`, which writes a line in pieces, so lines of
+    /// handshakes running at the same time got mixed, and tools/tlstrace.py
+    /// found a line that was not "random shared". Every line is now written
+    /// whole.
+    #[test]
+    fn bug_concurrent_handshakes_mixed_their_key_log_lines() {
+        let path = std::env::temp_dir().join(format!("shioko-keylog-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (threads, lines) = (16u8, 500usize);
+        std::thread::scope(|scope| {
+            for t in 0..threads {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..lines {
+                        keylog_to(path.as_os_str(), &[t; 32], &[t; 64]);
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        for t in 0..threads {
+            let line = format!("{} {}", format!("{t:02x}").repeat(32), format!("{t:02x}").repeat(64));
+            assert_eq!(text.lines().filter(|l| *l == line).count(), lines, "lines of thread {t} were mixed");
+        }
+        assert_eq!(text.lines().count(), usize::from(threads) * lines, "the log has other lines");
     }
 }
