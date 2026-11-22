@@ -78,10 +78,9 @@ fn main() -> ExitCode {
     // SIGTERM and SIGINT stay pending in every thread, for the thread that
     // stops the server to take; this has to come before any thread starts.
     #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
-    if !signals::block() {
-        eprintln!("cannot block SIGTERM and SIGINT");
-        return ExitCode::FAILURE;
-    }
+    let graceful = signals::start().map_err(|why| {
+        eprintln!("no graceful stop ({why}): SIGTERM and SIGINT end the server at once");
+    });
     // Opened now, so that a missing device stops the start, not a handshake.
     if crypto::random(&mut [0u8; 32]).is_err() {
         eprintln!("cannot read /dev/urandom");
@@ -102,7 +101,7 @@ fn main() -> ExitCode {
     // that wait for a request and the tunnels, let the requests being
     // served finish (for up to DRAIN_TIMEOUT), and exit.
     #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
+    if graceful.is_ok() {
         let stopping = std::sync::Arc::clone(&server);
         let stopper = std::thread::Builder::new().spawn(move || {
             let signal = signals::wait();

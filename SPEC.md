@@ -195,7 +195,9 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
   starts, and one thread waits for them. From then on nobody is let in,
   the connections waiting for a request and the tunnels are cut at once,
   the requests being served get up to 10 s to finish, and the process
-  exits with status 0. No other signal is handled; no privilege code, no
+  exits with status 0. If a system call filter forbids waiting for them,
+  they are left alone, so they end the server at once, and the log says so.
+  No other signal is handled; no privilege code, no
   daemonising. systemd grants the port-binding capability, runs the
   process as an unprivileged user and restarts it. Randomness comes from
   `/dev/urandom` through `std::fs`.
