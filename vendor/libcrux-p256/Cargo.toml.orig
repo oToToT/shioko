@@ -1,0 +1,33 @@
+[package]
+name = "libcrux-p256"
+description = "Formally verified P-256 implementation"
+readme = "Readme.md"
+
+version = "0.0.10"
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+libcrux-macros.workspace = true
+libcrux-traits.workspace = true
+libcrux-hacl-rs.workspace = true
+libcrux-secrets.workspace = true
+libcrux-sha2 = { workspace = true, features = ["expose-hacl"] }
+
+[features]
+expose-hacl = []
+
+# Checking secret independence
+check-secret-independence = [
+    "libcrux-secrets/check-secret-independence",
+    "libcrux-traits/check-secret-independence",
+]
+
+
+[dev-dependencies]
+libcrux-p256 = { path = ".", features = ["expose-hacl"] }
+libcrux-traits = { workspace = true, features = ["generic-tests"] }
+libcrux-kats = { workspace = true, features = ["ecdh"] }

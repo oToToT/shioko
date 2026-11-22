@@ -1,0 +1,83 @@
+# Each entry breaks Server.tla in one place and names the checks that must
+# then fail. The format is described in Handshake.broken.
+
+reach Full
+reach Contended
+
+# An accept loop takes a slot even when none is left.
+break cap-ignored
+expect invariant CapRespected
+-    /\ used < Cap
++    /\ TRUE
+
+# A failed accept() keeps its slot.
+break slot-lost
+expect invariant SlotsAccounted
+-    /\ accept' = [accept EXCEPT ![l] = "wait"]
+-    /\ used' = used - 1
++    /\ accept' = [accept EXCEPT ![l] = "wait"]
++    /\ used' = used
+
+# A connection gives its slot back twice.
+break slot-returned-twice
+expect invariant SlotsAccounted
+-    /\ conn' = [conn EXCEPT ![c] = "free"]
+-    /\ used' = used - 1
++    /\ conn' = [conn EXCEPT ![c] = "free"]
++    /\ used' = used - 2
+
+# The connection's thread does not wait for the second thread.
+break no-join
+expect invariant NoStrayThread
+-    /\ \A p \in Sides : At(c, p, "done")
+-    /\ conn' = [conn EXCEPT ![c] = "free"]
+-    /\ pump' = [pump EXCEPT ![c] = [p \in Sides |-> "off"]]
++    /\ At(c, "up", "done")
++    /\ conn' = [conn EXCEPT ![c] = "free"]
++    /\ pump' = [pump EXCEPT ![c]["up"] = "off"]
+
+# A stopping pump does not shut the sockets down.
+break no-shutdown
+expect property TunnelEnds
+-    /\ shut' = [shut EXCEPT ![c] = TRUE]
++    /\ UNCHANGED shut
+
+# Reads and writes on a socket that is shut down may still block.
+break shut-socket-blocks
+expect property TunnelEnds
+-            /\ WF_vars(shut[c] /\ (ReadEnds(c, p) \/ WriteFails(c, p)))
++            /\ TRUE
+
+# Writes to the client have no timeout.
+break no-write-timeout
+expect property LockGranted
+-            /\ WF_vars(Written(c, p) \/ WriteFails(c, p))
++            /\ TRUE
+
+# A failed write keeps the write lock. Tunnels that can never end pile up
+# until the whole server is stuck.
+break lock-kept
+expect invariant OneWriter
+expect deadlock
+-    /\ lock' = [lock EXCEPT ![c] = "free"]
+-    /\ Move(c, p, "stop")
++    /\ UNCHANGED lock
++    /\ Move(c, p, "stop")
+
+# The write lock does not exclude.
+break no-mutex
+expect invariant OneWriter
+-    /\ lock[c] = "free"
++    /\ TRUE
+
+# The pump that copies from the client also takes the write lock for data.
+break reader-takes-lock
+expect invariant ReadingNeverWaits
+-    /\ p = "down"
++    /\ TRUE
+
+# A variable takes a value of the wrong kind.
+break wrong-type
+expect invariant TypeOK
+-    /\ Move(c, p, "done")
++    /\ Move(c, p, "finished")

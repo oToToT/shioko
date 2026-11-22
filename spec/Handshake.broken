@@ -1,0 +1,163 @@
+# Each entry breaks Handshake.tla in one place and names the checks that
+# must then fail. tools/spec.sh runs them all, and also insists that every
+# check in Handshake.cfg is named here at least once.
+#
+#   break <name>
+#   expect <invariant|property> <Name>
+#   expect deadlock  the model must reach a state it cannot leave
+#   -<the lines to replace, exactly as they are in the spec; together
+#     they must match one place only>
+#   +<their replacement; any number of lines>
+#
+#   reach <Name>     the unbroken model must reach a state where Name holds
+
+reach FullRun
+
+# Threads do not wait for the write lock.
+break no-lock
+expect invariant NoNonceReuse
+expect invariant PeerCanDecrypt
+expect invariant AlertIsLast
+expect invariant KeyUpdateAnswered
+expect invariant MessagesNotInterleaved
+-LockIsFree == holders = {}
++LockIsFree == TRUE
+
+# A thread that sends for the application calls Step before it has the
+# write lock, like a thread that handles a record from the peer.
+break step-before-lock
+expect invariant AlertIsLast
+expect invariant KeyUpdateAnswered
+-    /\ IF e[1] \in {"write", "close"}
++    /\ IF FALSE
+
+# After a failed write, records still waiting are sent anyway.
+break send-after-failed-write
+expect invariant PeerCanDecrypt
+-    /\ NeedsLock(Head(todo[t])) => t \in holders /\ ~dead
++    /\ NeedsLock(Head(todo[t])) => t \in holders
+
+# Records that do not decrypt are skipped although no early data was offered.
+break skip-anything
+expect invariant SkipOnlyEarlyData
+-        IF s.early /\ s.phase = "wait_finished"
++        IF s.phase = "wait_finished"
+
+# The application may send before the client Finished.
+break early-write
+expect invariant DataOnlyAfterFinished
+expect invariant DataOnlyWhenOpen
+-        IF s.phase # "open" THEN Stay(s)
++        IF s.phase \notin {"wait_finished", "open"} THEN Stay(s)
+
+# A Finished that does not verify is accepted.
+break bad-finished-accepted
+expect invariant DataOnlyAfterFinished
+-        Fail("decrypt_error")
++        Go(s, "open", <<ReadKeys("data")>>)
+
+# A second HelloRetryRequest is sent.
+break second-retry
+expect invariant AtMostOnce
+-        Fail("illegal_parameter")
++        Go(s, "retry", <<Send("retry")>>)
+
+# Unencrypted records are still accepted once we have read keys.
+break plain-after-keys
+expect invariant PlainRefusedAfterKeys
+expect invariant DataOnlyAfterFinished
+-    ELSE IF protected # (s.phase \in {"wait_finished", "open"}) THEN
++    ELSE IF protected /\ s.phase \in {"start", "retry"} THEN
+
+# ChangeCipherSpec is dropped at any time, not only during the handshake.
+break ccs-any-time
+expect invariant PlainRefusedAfterKeys
+expect invariant NothingElseIgnored
+-        IF ~protected /\ s.phase \in {"retry", "wait_finished"}
++        IF ~protected
+
+# Other records may come between the pieces of a handshake message.
+break interleaved
+expect invariant SplitMessageNotInterleaved
+-    IF s.partial /\ c \notin HandshakeContents THEN
++    IF FALSE THEN
+
+# A requested KeyUpdate is not answered.
+break key-update-unanswered
+expect invariant KeyUpdateAnswered
+-        Go([t EXCEPT !.owed = TRUE], "open", <<ReadKeys("next")>>)
++        Go(t, "open", <<ReadKeys("next")>>)
+
+# We announce a KeyUpdate but keep writing under the old keys.
+break key-update-old-keys
+expect invariant PeerCanDecrypt
+-             acts |-> <<Send("key_update"), WriteKeys("next"), Send("data")>>]
++             acts |-> <<Send("key_update"), Send("data")>>]
+
+# Our flight goes out before the handshake keys are installed.
+break flight-in-clear
+expect invariant RightKeys
+-Flight == <<WriteKeys("handshake"), ReadKeys("handshake"), Send("flight"),
++Flight == <<ReadKeys("handshake"), Send("flight"), WriteKeys("handshake"),
+
+# Our flight goes out before ServerHello.
+break flight-first
+expect invariant InOrder
+-           <<Send("server_hello")>> \o Flight)
++           Flight \o <<Send("server_hello")>>)
+
+# The sequence number does not move on after a record.
+break sequence-stuck
+expect invariant NoNonceReuse
+-                        ELSE [wr EXCEPT !.seq = held[t][1].seq + 1]
++                        ELSE wr
+
+# A peer KeyUpdate moves our read keys back to the handshake keys.
+break keys-backward
+expect property KeysMoveForward
+-        Go(t, "open", <<ReadKeys("next")>>)
++        Go(t, "open", <<ReadKeys("handshake")>>)
+
+# The client Finished opens the connection without switching read keys.
+break read-keys-not-switched
+expect invariant KeysMatchPhase
+-        Go(t, "open", <<ReadKeys("data")>>)
++        Go(t, "open", <<>>)
+
+# There is no handshake deadline.
+break no-deadline
+expect property HandshakeEnds
+-    /\ SF_vars(Deadline)
++    /\ TRUE
+
+# An unusable record is answered with an alert but the connection stays up.
+break alert-without-close
+expect invariant AlertCloses
+expect invariant AtMostOnce
+-    ELSE IF e[1] = "invalid" THEN Fail(e[2])
++    ELSE IF e[1] = "invalid" THEN [state |-> s, acts |-> <<Alert(e[2])>>]
+
+# A closed connection still reacts.
+break closed-not-final
+expect invariant ClosedIsFinal
+expect invariant AlertIsLast
+-    IF s.phase = "closed" THEN Stay(s)
++    IF FALSE THEN Stay(s)
+
+# An unexpected message is ignored instead of ending the connection.
+break unexpected-ignored
+expect invariant NothingElseIgnored
+-    ELSE Fail("unexpected_message")
++    ELSE Stay(s)
+
+# Step asks for something that is not an action.
+break unknown-action
+expect invariant StepIsTotal
+-        Go(t, "open", <<Deliver>>)
++        Go(t, "open", <<Send("nothing")>>)
+
+# A variable takes a value of the wrong kind.
+break wrong-type
+expect invariant TypeOK
+-            WriteKeys("data")>>
++            WriteKeys("application")>>

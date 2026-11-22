@@ -1,0 +1,55 @@
+# Each entry breaks Http.tla in one place and names the checks that must
+
+# A request with both Content-Length and Transfer-Encoding is read as chunked.
+break both-headers
+expect invariant AmbiguousRejected
+-    ELSE IF coding = "chunked" /\ length = "none" /\ version = "1.1" THEN "chunked"
++    ELSE IF coding = "chunked" /\ version = "1.1" THEN "chunked"
+
+# Chunked bodies are accepted from HTTP/1.0 peers.
+break chunked-from-http10
+expect invariant NoChunkedInHttp10
+-    ELSE IF coding = "chunked" /\ length = "none" /\ version = "1.1" THEN "chunked"
++    ELSE IF coding = "chunked" /\ length = "none" THEN "chunked"
+
+# Chunked bodies are sent to HTTP/1.0 clients.
+break chunked-to-http10
+expect invariant NoChunkedInHttp10
+-    ELSE IF version = "1.1" THEN "chunked"
++    ELSE IF TRUE THEN "chunked"
+
+# The connection is kept after our own error response.
+break keep-after-error
+expect invariant ErrorCloses
+-        THEN Close(<<Error(e[2])>>) ELSE Close(<<>>)
++        THEN To(s, "idle", <<Error(e[2]), ReadHead>>) ELSE Close(<<>>)
+
+# clients alone, and those never keep the connection anyway.)
+break keep-undelimited
+expect invariant KeepNeedsBoth
+-        IF s.keep /\ e[2] = "delimited"
++        IF s.keep
+
+# A 101 opens a tunnel although no upgrade was requested.
+break tunnel-without-upgrade
+expect invariant TunnelOnlyOnUpgrade
+-        IF s.upgrade THEN To(s, "tunnel", <<Tunnel>>)
++        IF TRUE THEN To(s, "tunnel", <<Tunnel>>)
+
+# After a tunnel the connection goes back to reading requests.
+break request-after-tunnel
+expect invariant TunnelOnlyOnUpgrade
+-    ELSE IF s.phase = "relay" /\ e[1] = "done" /\ s.keep THEN
++    ELSE IF s.phase \in {"relay", "tunnel"} /\ e[1] = "done" /\ s.keep THEN
+
+# A closed connection still reacts.
+break closed-not-final
+expect invariant ClosedIsFinal
+-    IF s.phase = "closed" THEN Stay(s)
++    IF FALSE THEN Stay(s)
+
+# Step asks for something that is not an action.
+break unknown-action
+expect invariant StepIsTotal
+-        To(s, "forward", <<Forward>>)
++        To(s, "forward", <<<<"forward", "now">>>>)

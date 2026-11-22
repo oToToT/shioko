@@ -1,0 +1,32 @@
+[package]
+name = "libcrux-ecdsa"
+description = "Formally verified ECDSA signature library"
+readme = "Readme.md"
+version = "0.0.10"
+
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+libcrux-p256 = { workspace = true, default-features = true, features = [
+    "expose-hacl",
+] }
+libcrux-sha2.workspace = true
+libcrux-secrets.workspace = true
+rand = { version = "0.10", optional = true, default-features = false }
+
+[features]
+default = ["rand", "std"]
+rand = ["dep:rand"]
+std = ["rand?/std"]
+
+[dev-dependencies]
+rand_core = { version = "0.10" }
+rand = { version = "0.10", features = ["sys_rng"] }
+libcrux-kats = { workspace = true, features = ["ecdsa"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(valgrind_ct_test)'] }

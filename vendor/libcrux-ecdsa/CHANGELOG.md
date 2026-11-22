@@ -1,0 +1,66 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.0.10] (2026-11-19)
+
+### Fixed
+
+- [#1653](https://github.com/celabshq/libcrux/pull/1653): Remove the redundant, short-circuiting zero check in scalar validation, which leaked the position of the first non-zero byte of private keys and nonces
+- [#1655](https://github.com/celabshq/libcrux/pull/1655): `p256::PublicKey::try_from` picks the encoding by the length of the input. A 64-byte
+  `X || Y` key whose `X` starts with `0x02` or `0x03` was read as a compressed point. (@mtrossbach)
+
+### Changed
+
+- [#1655](https://github.com/celabshq/libcrux/pull/1655): `p256::PublicKey::try_from`, `p256::uncompressed_to_coordinates` and
+  `p256::compressed_to_coordinates` accept only the exact length of an encoding (65 bytes uncompressed,
+  33 compressed, 64 for `X || Y`). Trailing bytes after the key were ignored before and are now rejected. (@mtrossbach)
+
+## [0.0.9] (2026-10-07)
+
+### Added
+
+- [#1585](https://github.com/celabshq/libcrux/pull/1585): `p256::Signature::to_der`/`from_der` to encode/decode signatures as DER
+  `ECDSA-Sig-Value`
+- [#1584](https://github.com/celabshq/libcrux/pull/1584): `PrivateKey::public_key` to derive the public key from a P-256 private key
+- [#1584](https://github.com/celabshq/libcrux/pull/1584): `p256::rand::generate_key_pair` to generate a full P-256 key pair
+
+### Changed
+
+- [#1584](https://github.com/celabshq/libcrux/pull/1584): Widened the RNG bound on `rand`-feature functions from `CryptoRng` to
+  `TryCryptoRng` to support fallible RNGs
+
+## [0.0.8] (2026-07-15)
+
+### Changed
+
+- [#1534](https://github.com/celabshq/libcrux/pull/1534): Update dependencies: `libcrux-sha2`, `libcrux-p256`
+
+## [0.0.7] (2026-05-13)
+
+### Changed
+
+- [#1433](https://github.com/celabshq/libcrux/pull/1433): Update dependencies: `libcrux-traits`, `libcrux-sha2`
+- [#1385](https://github.com/celabshq/libcrux/pull/1385): Dropped `Rng` bounds on `rand` feature
+
+## [0.0.6] (2026-02-12)
+
+### Changed
+
+- [#1324](https://github.com/celabshq/libcrux/pull/1324): Update dependencies: `libcrux-p256`, `libcrux-sha2`
+
+## [0.0.5] (2026-01-26)
+
+- [#1297](https://github.com/celabshq/libcrux/pull/1297): Update dependencies
+
+## [0.0.4] (2025-11-05)
+
+- [#1061](https://github.com/celabshq/libcrux/pull/1061): Add `std` feature gate for `libcrux-ecdsa`
+- [#1060](https://github.com/celabshq/libcrux/pull/1060): Fixes for `libcrux-ecdsa` with `--no-default-features`
+
+## [0.0.3] (2025-06-30)
+
+- [#922](https://github.com/celabshq/libcrux/pull/922): Upgrade dependencies for `libcrux-sha2` and `libcrux-p256`
