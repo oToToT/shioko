@@ -21,7 +21,14 @@ const EMPTY_LINES: usize = 4;
 /// A token as RFC 9110 defines it: one or more of the characters allowed in
 /// method and field names (`tchar`).
 pub fn is_token(bytes: &[u8]) -> bool {
-    !bytes.is_empty() && bytes.iter().all(|&b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+    !bytes.is_empty() && bytes.iter().all(|&b| is_tchar(b))
+}
+
+// The character classes are `matches!`, not searches of a string: a search
+// is a loop, which the Kani proofs would have to unroll for every byte.
+fn is_tchar(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(byte, b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~')
 }
 
 fn is_visible(byte: u8) -> bool {
@@ -186,7 +193,8 @@ pub fn host(value: &[u8]) -> Option<&[u8]> {
             let ok = if byte == b'%' {
                 bytes.next().is_some_and(u8::is_ascii_hexdigit) && bytes.next().is_some_and(u8::is_ascii_hexdigit)
             } else {
-                byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=".contains(&byte)
+                byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=')
             };
             if !ok {
                 return None;
