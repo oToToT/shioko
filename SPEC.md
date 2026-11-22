@@ -158,9 +158,13 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
   us reading from it. After a failed write nothing more is sent.
 - A thread that stops shuts down both sockets, which is what stops the
   other one. Every blocking read and write has a timeout.
-- A global connection cap (512). The accept loop waits for a free slot before
-  calling `accept`, so overload backs up into the kernel queue. Slots are
-  released by an RAII guard on every exit path, including panics.
+- A global connection cap (512), lowered at startup if the open-file limit
+  cannot hold it: a connection holds up to two descriptors, and 16 are kept
+  for the rest (so 512 needs a limit of 1040; the unit sets 4096). The
+  accept loop waits for a free slot before calling `accept`, so overload
+  backs up into the kernel queue. Slots are released by an RAII guard on
+  every exit path, including panics.
+- `/dev/urandom` is opened once, at startup, and kept open.
 - `panic = "unwind"`: a panic ends one connection, not the server. Integer
   overflow checks stay on in release builds.
 - No signal handling, no privilege code, no daemonising. systemd grants the

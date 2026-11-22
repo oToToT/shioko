@@ -143,7 +143,8 @@ Fixed, not configurable: ports 80 and 443 on all IPv4 and IPv6 addresses
 is by default); ACME tokens from
 `/var/lib/shioko/acme/.well-known/acme-challenge` (where
 `certbot --webroot -w /var/lib/shioko/acme` puts them), for any hostname; at
-most 512 connections; 5 s to connect to an upstream (nginx waits 60 s); as
+most 512 connections (fewer, with a warning at startup, if the open-file
+limit is below 1040); 5 s to connect to an upstream (nginx waits 60 s); as
 in nginx, 60 s of silence from an upstream or on a WebSocket, and 75 s for
 an idle keep-alive connection. A name that only needs a
 certificate, a mail server's for instance, needs no section. An unknown

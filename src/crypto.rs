@@ -19,9 +19,20 @@ const BLOCK_LEN: usize = 64;
 #[derive(Debug, PartialEq, Eq)]
 pub struct Error;
 
-/// Fill `buf` from the kernel's random number generator.
+/// Fill `buf` from the kernel's random number generator. The device is
+/// opened once and kept open, so a handshake never needs a file descriptor
+/// of its own for randomness, which could run out under load.
 pub fn random(buf: &mut [u8]) -> Result<(), Error> {
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf)).map_err(|_| Error)
+    static URANDOM: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+    let file = match URANDOM.get() {
+        Some(file) => file,
+        None => {
+            let opened = std::fs::File::open("/dev/urandom").map_err(|_| Error)?;
+            URANDOM.get_or_init(|| opened)
+        }
+    };
+    let mut reader: &std::fs::File = file;
+    reader.read_exact(buf).map_err(|_| Error)
 }
 
 /// Overwrites a secret. Best effort: without `unsafe` the compiler is

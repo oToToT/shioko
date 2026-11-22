@@ -16,6 +16,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The most connections served at once.
 pub const CONNECTIONS: usize = 512;
+/// The file descriptors the process needs besides its connections': the
+/// standard streams, the two listeners, /dev/urandom, and room for a
+/// certificate or token file being read.
+pub const RESERVED_FILES: usize = 16;
+
+/// The connection cap that fits the open-file limit, given the text of
+/// /proc/self/limits: a connection holds up to two descriptors, its
+/// client's and its upstream's. With no limit to read, or none set,
+/// `CONNECTIONS`.
+pub fn cap_for(limits: &str) -> usize {
+    let soft = limits
+        .lines()
+        .find_map(|line| line.strip_prefix("Max open files"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|value| value.parse::<usize>().ok());
+    soft.map_or(CONNECTIONS, |files| (files.saturating_sub(RESERVED_FILES) / 2).clamp(1, CONNECTIONS))
+}
 /// How long a write to a client may block.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long an accept loop rests after `accept` failed.
@@ -154,6 +171,29 @@ mod tests {
     use crate::log::testing::Kept;
     use std::io::{Read, Write};
     use std::net::Shutdown;
+
+    /// Bug (found in review): the cap was 512 connections whatever the
+    /// open-file limit. A full server holds a client and an upstream socket
+    /// for each connection, so under the common default limit of 1024 the
+    /// last connections, and every /dev/urandom read, failed with EMFILE.
+    /// The cap now leaves the process room for all of its descriptors.
+    #[test]
+    fn bug_the_connection_cap_ignored_the_open_file_limit() {
+        let limits = |soft: &str| {
+            format!(
+                "Limit                     Soft Limit           Hard Limit           Units     \n\
+                 Max processes             63413                63413                processes \n\
+                 Max open files            {soft:<20} 524288               files     \n"
+            )
+        };
+        let cap = cap_for(&limits("1024"));
+        assert!(2 * cap + RESERVED_FILES <= 1024, "{cap} connections do not fit 1024 descriptors");
+        assert_eq!(cap, 504);
+        assert_eq!(cap_for(&limits("4096")), CONNECTIONS);
+        assert_eq!(cap_for(&limits("unlimited")), CONNECTIONS);
+        assert_eq!(cap_for(&limits("10")), 1);
+        assert_eq!(cap_for(""), CONNECTIONS, "no /proc, as on macOS");
+    }
 
     /// Starts a server for `sites` on a free port and returns its address.
     fn start(sites: &str, cap: usize) -> (Arc<Server>, std::net::SocketAddr) {

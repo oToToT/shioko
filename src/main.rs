@@ -73,7 +73,20 @@ fn main() -> ExitCode {
     let log = log::Standard;
     let tls_sites = identities.iter().flatten().count();
     log.error(&format!("serving {} sites on port 80, {tls_sites} of them on port 443", config.sites.len()));
-    let server = server::Server::new(config, identities, PathBuf::from(ACME_DIRECTORY), Box::new(log), server::CONNECTIONS);
+    // Opened now, so that a missing device stops the start, not a handshake.
+    if crypto::random(&mut [0u8; 32]).is_err() {
+        eprintln!("cannot read /dev/urandom");
+        return ExitCode::FAILURE;
+    }
+    let cap = server::cap_for(&std::fs::read_to_string("/proc/self/limits").unwrap_or_default());
+    if cap < server::CONNECTIONS {
+        log.error(&format!(
+            "the open-file limit leaves room for {cap} connections, not {}: raise it to {} (LimitNOFILE=, ulimit -n)",
+            server::CONNECTIONS,
+            2 * server::CONNECTIONS + server::RESERVED_FILES
+        ));
+    }
+    let server = server::Server::new(config, identities, PathBuf::from(ACME_DIRECTORY), Box::new(log), cap);
     let shared = std::sync::Arc::clone(&server);
     if std::thread::Builder::new().spawn(move || server::listen(&shared, &plain, false)).is_err() {
         eprintln!("cannot start the listener for port 80");
