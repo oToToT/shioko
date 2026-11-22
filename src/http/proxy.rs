@@ -95,6 +95,12 @@ pub struct Context<'a, K: Connect> {
     /// The time, in seconds since 1970. Asked for each response.
     pub clock: fn() -> u64,
     pub timeouts: Timeouts,
+    /// Told when the connection may be cut by the server stopping (`true`:
+    /// it waits for a request head, or becomes a tunnel) and when no longer
+    /// (`false`: a request has come). Given `true`, it answers `false` if
+    /// the server is stopping already: the connection is then ended
+    /// instead.
+    pub interruptible: &'a dyn Fn(bool) -> bool,
 }
 
 /// One request and what we have learnt about it so far.
@@ -170,11 +176,16 @@ pub fn serve<'a, C: Stream, K: Connect>(client: &C, context: &Context<'a, K>) {
                 // The upstream connection of the exchange before goes with
                 // it, and so does whatever was read from it and not used.
                 exchange = Exchange::new();
+                if !(context.interruptible)(true) {
+                    // The server is stopping: no more requests.
+                    break;
+                }
                 let limit = if first { context.timeouts.head } else { context.timeouts.keep_alive };
                 first = false;
                 input.set_deadline(Some(Instant::now() + limit));
                 let event = read_head(client, &mut input, context, &mut exchange);
                 input.set_deadline(None);
+                (context.interruptible)(false);
                 Some(event)
             }
             Action::Connect => Some(connect(context, &mut exchange).unwrap_or_else(Event::Fail)),
@@ -650,6 +661,11 @@ fn tunnel<C: Stream, K: Connect>(
     let (Some(response), Some(upstream)) = (&exchange.response, &exchange.upstream) else {
         return Event::Gone;
     };
+    // A tunnel lasts as long as its two ends want; a stopping server cuts
+    // it, and does not start one.
+    if !(context.interruptible)(true) {
+        return Event::Gone;
+    }
     exchange.status = 101;
     log_access(context, exchange);
     let mut head = client_head(response, (context.clock)());

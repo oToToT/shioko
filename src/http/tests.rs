@@ -489,6 +489,7 @@ fn run(exchanges: &[Exchange], tail: &[u8], client_feed: Feed, upstream_feed: Fe
         acme: Path::new("/nonexistent"),
         clock: || 0,
         timeouts: Timeouts::STANDARD,
+        interruptible: &|_| true,
     };
     proxy::serve(&client, &context);
     Run {
@@ -1030,6 +1031,7 @@ impl Talk {
             acme: &self.acme,
             clock: || 784_111_777,
             timeouts: self.timeouts,
+            interruptible: &|_| true,
         };
         proxy::serve(&client, &context);
         let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
@@ -1468,6 +1470,7 @@ fn every_response_is_dated_when_it_is_written() {
         // Every reading of the clock is a day later than the one before.
         clock: || NOW.fetch_add(86_400, Ordering::Relaxed),
         timeouts: Timeouts::STANDARD,
+        interruptible: &|_| true,
     };
     proxy::serve(&client, &context);
     let received = String::from_utf8(client.written()).unwrap();
@@ -1496,6 +1499,7 @@ fn octets_pass_through_as_they_are() {
         acme: Path::new("/nonexistent"),
         clock: || 0,
         timeouts: Timeouts::STANDARD,
+        interruptible: &|_| true,
     };
     proxy::serve(&script, &context);
     let sent = upstreams.made.lock().unwrap()[0].written();
@@ -1682,6 +1686,7 @@ fn an_upstream_is_closed_when_its_exchange_ends() {
             acme: Path::new("/nonexistent"),
             clock: || 0,
             timeouts: Timeouts::STANDARD,
+            interruptible: &|_| true,
         };
         proxy::serve(&client, &context);
         assert!(upstreams.made.lock().unwrap()[0].was_shut(), "{reply:?}");
@@ -1835,6 +1840,7 @@ fn bug_date_was_taken_once_per_connection() {
         acme: Path::new("/nonexistent"),
         clock: || NOW.fetch_add(3_600, Ordering::Relaxed),
         timeouts: Timeouts::STANDARD,
+        interruptible: &|_| true,
     };
     proxy::serve(&client, &context);
     let received = String::from_utf8(client.written()).unwrap();
@@ -1861,6 +1867,7 @@ fn bug_upstream_stayed_open_after_its_exchange() {
         acme: Path::new("/nonexistent"),
         clock: || 0,
         timeouts: Timeouts::STANDARD,
+        interruptible: &|_| true,
     };
     // The client keeps its connection, and the upstream must already be
     // closed when the proxy goes back to waiting for the next request:

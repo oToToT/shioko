@@ -475,7 +475,52 @@ def parity():
         sum(r["why"] == "NOT EXPLAINED" for r in rows)))
 
 
+def closed_soon(sock, seconds=5):
+    """The server ends this connection within `seconds`: reading gives the
+    end of the stream, or an error, not a timeout."""
+    sock.settimeout(seconds)
+    try:
+        return sock.recv(1) == b""
+    except socket.timeout:
+        return False
+    except OSError:
+        return True
+
+
+def drain():
+    """Runs while tools/e2e.sh stops shioko with SIGTERM, once this has
+    printed "ready". A request being served must be answered whole; a kept
+    connection waiting for its next request and a WebSocket must be cut at
+    once; a new connection must not be served."""
+    started = time.time()
+    slow = connect(SHIOKO["inside"], "chat.test", timeout=30)
+    slow.sendall(b"GET /slow?s=6 HTTP/1.1\r\nHost: chat.test\r\nConnection: close\r\n\r\n")
+    kept = connect(SHIOKO["inside"], "chat.test")
+    exchange(kept, "GET", "/bytes?n=10", "chat.test", close=False)
+    ws, status, _ = ws_open(SHIOKO["inside"], "chat.test")
+    print("ready", flush=True)
+    found = {"websocket opened": status == 101,
+             "kept connection cut": closed_soon(kept),
+             "websocket cut": closed_soon(ws)}
+    try:
+        with connect(SHIOKO["inside"], None, timeout=5) as late:
+            exchange(late, "GET", "/", "nowhere.test")
+        found["new connection refused"] = False
+    except (OSError, http.client.HTTPException, ValueError):
+        found["new connection refused"] = True
+    response = read_response(slow)
+    found["request being served answered whole"] = \
+        response.status == 200 and response.complete and response.body == b"slow\n"
+    found["seconds"] = round(time.time() - started, 1)
+    print(json.dumps(found, indent=1))
+    with open("/results/drain.json", "w") as f:
+        json.dump(found, f, indent=1)
+    return all(v for k, v in found.items() if k != "seconds")
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["drain"]:
+        sys.exit(0 if drain() else 1)
     if sys.argv[1:] == ["check"]:
         checks()
         with open("/results/checks.json", "w") as f:

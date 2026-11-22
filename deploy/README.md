@@ -338,5 +338,6 @@ setpriv --reuid shioko --regid shioko --init-groups ./shioko check /etc/shioko/s
 
 Then copy it over `/usr/local/bin/shioko` and `systemctl restart shioko`.
 The same goes for a changed configuration: `shioko check` first, then
-restart. A restart drops open connections, WebSockets included; clients
-reconnect.
+restart. A restart lets the requests being served finish, for up to 10 s;
+connections waiting for their next request and WebSockets are closed at
+once, and clients reconnect.

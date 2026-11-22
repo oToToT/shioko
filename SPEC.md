@@ -184,13 +184,21 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
 - A watcher thread reads the certificate and key files again every minute
   (section 5).
 - `unsafe` is denied by a lint, and allowed by name only in `crypto::wipe`,
-  which overwrites secrets with volatile writes. Every `unsafe` block has a
-  `SAFETY:` comment, which clippy requires.
+  which overwrites secrets with volatile writes, and in `signals`, which
+  makes the two Linux system calls that wait for SIGTERM (the standard
+  library has none). Every `unsafe` block has a `SAFETY:` comment, which
+  clippy requires.
 - `panic = "unwind"`: a panic ends one connection, not the server. Integer
   overflow checks stay on in release builds.
-- No signal handling, no privilege code, no daemonising. systemd grants the
-  port-binding capability, runs the process as an unprivileged user and
-  restarts it. Randomness comes from `/dev/urandom` through `std::fs`.
+- SIGTERM and SIGINT (systemd's stop and restart, a terminal's Ctrl-C) stop
+  the server gracefully: both are blocked in every thread before any
+  starts, and one thread waits for them. From then on nobody is let in,
+  the connections waiting for a request and the tunnels are cut at once,
+  the requests being served get up to 10 s to finish, and the process
+  exits with status 0. No other signal is handled; no privilege code, no
+  daemonising. systemd grants the port-binding capability, runs the
+  process as an unprivileged user and restarts it. Randomness comes from
+  `/dev/urandom` through `std::fs`.
 - Parsers never index or unwrap. All untrusted input goes through one
   bounds-checked cursor type. Clippy denies `indexing_slicing`, `unwrap_used`,
   `expect_used` and `panic` outside tests.
@@ -209,6 +217,7 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
 | Upstream read / write idle | 60 s |
 | Tunnel idle (no bytes either way) | 60 s |
 | Request body | 1M default, per site |
+| Requests being served when told to stop | 10 s to finish |
 
 ### Source layout
 
@@ -651,6 +660,9 @@ of a tunnel.
   client at once; copying from the client never waits for the write lock.
 - Once either tunnel thread's read ends, the whole tunnel ends and the slot
   is free; a thread waiting for the write lock does not wait for ever.
+- Once the server is stopping nobody is let in, and the stop always ends
+  with the process exiting, also without its deadline: the tunnels are cut
+  and the requests being served end.
 
 **Showing the checks can fail.** Each spec has a `.broken` file: a list of
 one-place changes to the spec, each with the checks that must then fail.

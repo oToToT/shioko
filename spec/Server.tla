@@ -25,6 +25,11 @@
 (* reading from it. Either pump takes the lock once more at its end, to    *)
 (* say goodbye to the client with a TLS alert.                             *)
 (*                                                                         *)
+(* SIGTERM stops the server: from then on nobody is let in, the           *)
+(* connections that wait for a request and the tunnels are cut, the       *)
+(* requests being served end, and the process exits, once no connection   *)
+(* is left or at a deadline.                                               *)
+(*                                                                         *)
 (* A pump stops when its read ends (end of stream, error, idle timeout),   *)
 (* when a write fails, or when it panics. In every case it then shuts down *)
 (* both sockets, which is what makes the other pump stop.                  *)
@@ -70,9 +75,15 @@ VARIABLES
               \*   stop       about to shut the sockets down
               \*   done       finished
     lock,     \* per connection: who holds the write lock, or "free"
-    shut      \* per connection: the sockets have been shut down
+    shut,     \* per connection: the sockets have been shut down
+    stopping, \* SIGTERM has come
+    deadline, \* the time a stop waits for the requests being served is up
+    ended,    \* the process has exited
+    late      \* a connection was let in after the stop (never, if right)
 
-vars == <<used, accept, conn, pool, from, pump, lock, shut>>
+vars == <<used, accept, conn, pool, from, pump, lock, shut, stopping, deadline, ended, late>>
+\* What the stop leaves alone.
+stop == <<stopping, deadline, ended, late>>
 
 Sides == {"up", "down"}
 
@@ -85,6 +96,7 @@ Init ==
     /\ pump = [c \in Conns |-> [p \in Sides |-> "off"]]
     /\ lock = [c \in Conns |-> "free"]
     /\ shut = [c \in Conns |-> FALSE]
+    /\ stopping = FALSE /\ deadline = FALSE /\ ended = FALSE /\ late = FALSE
 
 (***************************************************************************)
 (* Accepting and serving                                                   *)
@@ -98,7 +110,7 @@ Reserve(l) ==
     /\ used < 2 * Cap
     /\ used' = used + 1
     /\ accept' = [accept EXCEPT ![l] = "ready"]
-    /\ UNCHANGED <<conn, pool, from, pump, lock, shut>>
+    /\ UNCHANGED <<conn, pool, from, pump, lock, shut, stop>>
 
 Live == {c \in Conns : conn[c] # "free"}
 InPool(k) == {c \in Live : pool[c] = k}
@@ -114,29 +126,32 @@ Room(k, a) ==
 Accept(l, c, k, a) ==
     /\ accept[l] = "ready"
     /\ conn[c] = "free"
+    /\ ~stopping
     /\ Room(k, a)
     /\ accept' = [accept EXCEPT ![l] = "wait"]
     /\ conn' = [conn EXCEPT ![c] = "serve"]
     /\ pool' = [pool EXCEPT ![c] = k]
     /\ from' = [from EXCEPT ![c] = IF k = "public" THEN a ELSE "none"]
-    /\ UNCHANGED <<used, pump, lock, shut>>
+    /\ late' = (late \/ stopping)
+    /\ UNCHANGED <<used, pump, lock, shut, stopping, deadline, ended>>
 
 \* A connection arrives that is turned away: its pool or address has no
-\* room, or it comes over TLS from outside every allowlist when every TLS
-\* site has one. It is closed at once and the slot is given back.
+\* room, it comes over TLS from outside every allowlist when every TLS
+\* site has one, or the server is stopping. It is closed at once and the
+\* slot is given back.
 TurnAway(l, k, a) ==
     /\ accept[l] = "ready"
-    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls)
+    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls) \/ stopping
     /\ accept' = [accept EXCEPT ![l] = "wait"]
     /\ used' = used - 1
-    /\ UNCHANGED <<conn, pool, from, pump, lock, shut>>
+    /\ UNCHANGED <<conn, pool, from, pump, lock, shut, stop>>
 
 \* accept() fails, or the thread cannot be started: the slot is given back.
 AcceptFails(l) ==
     /\ accept[l] = "ready"
     /\ accept' = [accept EXCEPT ![l] = "wait"]
     /\ used' = used - 1
-    /\ UNCHANGED <<conn, pool, from, pump, lock, shut>>
+    /\ UNCHANGED <<conn, pool, from, pump, lock, shut, stop>>
 
 \* The connection's slot goes back to its pool.
 Leave(c) ==
@@ -150,7 +165,7 @@ Leave(c) ==
 Finish(c) ==
     /\ conn[c] = "serve"
     /\ Leave(c)
-    /\ UNCHANGED <<accept, pump, lock, shut>>
+    /\ UNCHANGED <<accept, pump, lock, shut, stop>>
 
 (***************************************************************************)
 (* Tunnels                                                                 *)
@@ -161,7 +176,7 @@ StartTunnel(c) ==
     /\ conn[c] = "serve"
     /\ conn' = [conn EXCEPT ![c] = "tunnel"]
     /\ pump' = [pump EXCEPT ![c] = [p \in Sides |-> "read"]]
-    /\ UNCHANGED <<used, accept, pool, from, lock, shut>>
+    /\ UNCHANGED <<used, accept, pool, from, lock, shut, stop>>
 
 At(c, p, where) == pump[c][p] = where
 Move(c, p, where) == pump' = [pump EXCEPT ![c][p] = where]
@@ -176,21 +191,21 @@ Data(c, p) ==
     /\ At(c, p, "read")
     /\ ~shut[c]
     /\ Move(c, p, "lock")
-    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut, stop>>
 
 \* A read ends: end of stream, error, idle timeout, sockets shut down, or
 \* the pump panics. The pump may have an alert to send before it stops.
 ReadEnds(c, p) ==
     /\ At(c, p, "read")
     /\ Move(c, p, "bye_lock") \/ Move(c, p, "stop")
-    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut, stop>>
 
 TakeLock(c, p) ==
     /\ Waiting(c, p)
     /\ lock[c] = "free"
     /\ lock' = [lock EXCEPT ![c] = p]
     /\ Move(c, p, IF At(c, p, "lock") THEN "write" ELSE "bye_write")
-    /\ UNCHANGED <<used, accept, conn, pool, from, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, shut, stop>>
 
 \* The client took the bytes.
 Written(c, p) ==
@@ -198,7 +213,7 @@ Written(c, p) ==
     /\ ~shut[c]
     /\ lock' = [lock EXCEPT ![c] = "free"]
     /\ Move(c, p, IF At(c, p, "write") THEN "read" ELSE "stop")
-    /\ UNCHANGED <<used, accept, conn, pool, from, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, shut, stop>>
 
 \* A write fails: error, write timeout, sockets shut down, or the pump
 \* panics. The lock is released in every case.
@@ -206,7 +221,7 @@ WriteFails(c, p) ==
     /\ Writing(c, p)
     /\ lock' = [lock EXCEPT ![c] = "free"]
     /\ Move(c, p, "stop")
-    /\ UNCHANGED <<used, accept, conn, pool, from, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, shut, stop>>
 
 \* A stopping pump shuts down both sockets, also when it is unwinding from
 \* a panic.
@@ -214,7 +229,7 @@ Stop(c, p) ==
     /\ At(c, p, "stop")
     /\ shut' = [shut EXCEPT ![c] = TRUE]
     /\ Move(c, p, "done")
-    /\ UNCHANGED <<used, accept, conn, pool, from, lock>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock, stop>>
 
 \* The connection's thread waits for the second thread, then ends and
 \* gives the slot back.
@@ -224,9 +239,43 @@ EndTunnel(c) ==
     /\ Leave(c)
     /\ pump' = [pump EXCEPT ![c] = [p \in Sides |-> "off"]]
     /\ shut' = [shut EXCEPT ![c] = FALSE]
-    /\ UNCHANGED <<accept, lock>>
+    /\ UNCHANGED <<accept, lock, stop>>
 
-Next ==
+(***************************************************************************)
+(* Stopping                                                                *)
+(***************************************************************************)
+
+\* SIGTERM (or SIGINT) comes.
+Terminate ==
+    /\ ~stopping
+    /\ stopping' = TRUE
+    /\ UNCHANGED <<used, accept, conn, pool, from, pump, lock, shut, deadline, ended, late>>
+
+\* A stopping server cuts a tunnel: it shuts the sockets down, which ends
+\* both pumps. (Connections waiting for a request are cut too; they end
+\* with Finish, below.)
+Cut(c) ==
+    /\ stopping
+    /\ conn[c] = "tunnel"
+    /\ ~shut[c]
+    /\ shut' = [shut EXCEPT ![c] = TRUE]
+    /\ UNCHANGED <<used, accept, conn, pool, from, pump, lock, stop>>
+
+\* The time a stop waits for the requests being served is up.
+Deadline ==
+    /\ stopping /\ ~deadline
+    /\ deadline' = TRUE
+    /\ UNCHANGED <<used, accept, conn, pool, from, pump, lock, shut, stopping, ended, late>>
+
+\* The process exits: no connection is left, or the deadline has come.
+Exit ==
+    /\ stopping
+    /\ Live = {} \/ deadline
+    /\ ended' = TRUE
+    /\ UNCHANGED <<used, accept, conn, pool, from, pump, lock, shut, stopping, deadline, late>>
+
+Running ==
+    \/ Terminate \/ Deadline \/ Exit \/ \E c \in Conns : Cut(c)
     \/ \E l \in Listeners :
         \/ Reserve(l) \/ AcceptFails(l)
         \/ \E k \in Pools, a \in Addresses :
@@ -236,18 +285,26 @@ Next ==
         \/ Data(c, p) \/ ReadEnds(c, p) \/ TakeLock(c, p)
         \/ Written(c, p) \/ WriteFails(c, p) \/ Stop(c, p)
 
-\* What the liveness properties rely on.
+\* Once the process has exited, nothing happens any more.
+Next == (~ended /\ Running) \/ (ended /\ UNCHANGED vars)
+
+\* What the liveness properties rely on, while the process runs.
 Fairness ==
-    \A c \in Conns :
-        /\ WF_vars(EndTunnel(c))
+    /\ WF_vars(~ended /\ Exit)
+    /\ \A c \in Conns :
+        /\ WF_vars(~ended /\ EndTunnel(c))
+        \* a stopping server cuts the tunnels, and the requests it is
+        \* serving end (by their timeouts, if not before)
+        /\ WF_vars(~ended /\ Cut(c))
+        /\ WF_vars(~ended /\ stopping /\ Finish(c))
         /\ \A p \in Sides :
-            /\ WF_vars(Stop(c, p))
+            /\ WF_vars(~ended /\ Stop(c, p))
             \* a read or write on a socket that is shut down returns at once
-            /\ WF_vars(shut[c] /\ (ReadEnds(c, p) \/ WriteFails(c, p)))
+            /\ WF_vars(~ended /\ shut[c] /\ (ReadEnds(c, p) \/ WriteFails(c, p)))
             \* a write has a timeout: it does not block for ever
-            /\ WF_vars(Written(c, p) \/ WriteFails(c, p))
+            /\ WF_vars(~ended /\ (Written(c, p) \/ WriteFails(c, p)))
             \* a thread waiting for the lock gets it once it is free
-            /\ SF_vars(TakeLock(c, p))
+            /\ SF_vars(~ended /\ TakeLock(c, p))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -266,6 +323,7 @@ TypeOK ==
     /\ pump \in [Conns -> [Sides -> PumpStates]]
     /\ lock \in [Conns -> Sides \cup {"free"}]
     /\ shut \in [Conns -> BOOLEAN]
+    /\ {stopping, deadline, ended, late} \subseteq BOOLEAN
 
 \* Never more connections in a pool than its cap, nor from one address in
 \* the public pool than PerAddress; never more slots taken than the two
@@ -304,11 +362,20 @@ ReadingNeverWaits ==
 TunnelEnds ==
     \A c \in Conns :
         (\E p \in Sides : pump[c][p] \in {"bye_lock", "bye_write", "stop"})
-            ~> (conn[c] = "free")
+            ~> (conn[c] = "free" \/ ended)
 
-\* A pump waiting for the write lock does not wait for ever.
+\* A pump waiting for the write lock does not wait for ever, while the
+\* process runs.
 LockGranted ==
-    \A c \in Conns, p \in Sides : Waiting(c, p) ~> ~Waiting(c, p)
+    \A c \in Conns, p \in Sides : Waiting(c, p) ~> (~Waiting(c, p) \/ ended)
+
+\* Nobody is let in once the server is stopping.
+NoneLetInWhileStopping == ~late
+
+\* A stop always ends with the process exiting, and need not wait for its
+\* deadline: without it, the connections left all end (the tunnels cut,
+\* the requests finished) and the process exits then.
+StopEnds == stopping ~> ended
 
 \* Keeps the model small: one tunnel at a time. A tunnel's threads, lock
 \* and sockets are its own, and which pool a slot is from does not depend
@@ -331,6 +398,10 @@ OnePoolFull ==
     /\ Cardinality(InPool("public")) = Cap
     /\ Cardinality(InPool("allowed")) < Cap
     /\ \E l \in Listeners : accept[l] = "ready"
+
+\* Not a property. A stop that ended without its deadline, the server
+\* drained.
+Drained == ended /\ ~deadline
 
 \* Not a property. One pump waits for the lock while the other holds it.
 Contended ==

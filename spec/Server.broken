@@ -4,6 +4,28 @@
 reach Full
 reach Contended
 reach OnePoolFull
+reach Drained
+
+# A stopping server still lets connections in.
+break let-in-while-stopping
+expect invariant NoneLetInWhileStopping
+-    /\ conn[c] = "free"
+-    /\ ~stopping
+-    /\ Room(k, a)
++    /\ conn[c] = "free"
++    /\ Room(k, a)
+
+# A stopping server does not cut its tunnels, which may then run for ever.
+break tunnels-not-cut
+expect property StopEnds
+-        /\ WF_vars(~ended /\ Cut(c))
++        /\ TRUE
+
+# A stopping server never exits.
+break no-exit
+expect property StopEnds
+-    /\ WF_vars(~ended /\ Exit)
++    /\ TRUE
 
 # An accept loop takes a slot even when none is left.
 break cap-ignored
@@ -26,10 +48,10 @@ expect invariant PerAddressRespected
 # A connection that is turned away keeps its slot.
 break turned-away-keeps-slot
 expect invariant SlotsAccounted
--    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls)
+-    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls) \/ stopping
 -    /\ accept' = [accept EXCEPT ![l] = "wait"]
 -    /\ used' = used - 1
-+    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls)
++    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls) \/ stopping
 +    /\ accept' = [accept EXCEPT ![l] = "wait"]
 +    /\ used' = used
 
@@ -72,19 +94,21 @@ expect invariant NoStrayThread
 # A stopping pump does not shut the sockets down.
 break no-shutdown
 expect property TunnelEnds
+-    /\ At(c, p, "stop")
 -    /\ shut' = [shut EXCEPT ![c] = TRUE]
++    /\ At(c, p, "stop")
 +    /\ UNCHANGED shut
 
 # Reads and writes on a socket that is shut down may still block.
 break shut-socket-blocks
 expect property TunnelEnds
--            /\ WF_vars(shut[c] /\ (ReadEnds(c, p) \/ WriteFails(c, p)))
+-            /\ WF_vars(~ended /\ shut[c] /\ (ReadEnds(c, p) \/ WriteFails(c, p)))
 +            /\ TRUE
 
 # Writes to the client have no timeout.
 break no-write-timeout
 expect property LockGranted
--            /\ WF_vars(Written(c, p) \/ WriteFails(c, p))
+-            /\ WF_vars(~ended /\ (Written(c, p) \/ WriteFails(c, p)))
 +            /\ TRUE
 
 # A failed write keeps the write lock, so the tunnel can never end. (With

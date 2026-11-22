@@ -80,7 +80,8 @@ It does not fit if you need any of these, which shioko does not do:
 - HTTPS or Unix-socket upstreams, or several upstreams per site;
 - ports other than 80 and 443, or HTTP/2 (clients fall back to HTTP/1.1);
 - configuration reload without a restart (renewed certificates are taken
-  up by themselves, within a minute);
+  up by themselves, within a minute, and a restart lets the requests being
+  served finish);
 - clients that cannot do TLS 1.3 with ChaCha20-Poly1305 (next section).
 
 ### Which clients can connect

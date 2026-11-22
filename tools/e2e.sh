@@ -3,8 +3,9 @@
 # build, as deployed) and nginx serving the same sites in front of real
 # Vaultwarden and Jellyfin and a test upstream, and Pebble issuing a
 # certificate to certbot through shioko's port 80. Then the checks
-# (ci/e2e/e2e.py check), the comparison with nginx (parity), and on request
-# the soak runs, sampling shioko's memory, threads and file descriptors.
+# (ci/e2e/e2e.py check), the comparison with nginx (parity), on request the
+# soak runs, sampling shioko's memory, threads and file descriptors, and
+# last a stop with SIGTERM while requests are open (e2e.py drain).
 #
 #   tools/e2e.sh                  checks and parity
 #   tools/e2e.sh soak [MINUTES]   also the soak runs (default 10 minutes each)
@@ -13,7 +14,8 @@
 #                                 TLC checks the run against spec/Server.tla
 #
 # Everything found goes to target/e2e/: checks.json, parity.json,
-# soak.json, resources.csv, certbot.log, shioko.log, shioko.record.
+# soak.json, resources.csv, drain.json, certbot.log, shioko.log,
+# shioko.record.
 set -eu
 cd "$(dirname "$0")/.."
 mode=${1:-}
@@ -79,6 +81,31 @@ if [ "$mode" = record ]; then
     tlc="docker run --rm -v $PWD:/src -w /src shioko-e2e-tlc python3 tools/servertrace.py"
     $tlc check "$out/shioko.record" || failed=1
     $tlc selftest "$out/shioko.record" || failed=1
+fi
+
+echo "== stopping with SIGTERM"
+# The client opens a slow request, a kept connection and a WebSocket, says
+# "ready", and checks what becomes of them once shioko is told to stop.
+$compose run --rm client python3 e2e.py drain > "$out/drain.log" 2>&1 &
+drainer=$!
+for _ in $(seq 150); do
+    grep -q '^ready' "$out/drain.log" 2> /dev/null && break
+    sleep 0.2
+done
+container=$($compose ps -q shioko)
+told=$(date +%s)
+$compose kill -s SIGTERM shioko > /dev/null 2>&1
+code=$(docker wait "$container")
+took=$(( $(date +%s) - told ))
+wait "$drainer" || failed=1
+sed -n '/^{/,$p' "$out/drain.log"
+echo "shioko exited with status $code, ${took} s after SIGTERM"
+# Exited cleanly, as soon as the slow request was answered, not at the
+# 10-second deadline, and having said so.
+if [ "$code" != 0 ] || [ "$took" -ge 9 ] ||
+    ! docker logs "$container" 2>&1 | tail -n 1 | grep -qx stopped; then
+    echo "shioko did not stop as it should"
+    failed=1
 fi
 
 [ "$failed" -eq 0 ] || { echo "end-to-end checks failed; see $out/"; exit 1; }

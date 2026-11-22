@@ -25,6 +25,8 @@ mod pem;
 #[cfg(feature = "record")]
 mod record;
 mod server;
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+mod signals;
 mod stream;
 mod tls;
 
@@ -73,6 +75,13 @@ fn main() -> ExitCode {
     let log = log::Standard;
     let tls_sites = identities.iter().flatten().count();
     log.error(&format!("serving {} sites on port 80, {tls_sites} of them on port 443", config.sites.len()));
+    // SIGTERM and SIGINT stay pending in every thread, for the thread that
+    // stops the server to take; this has to come before any thread starts.
+    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    if !signals::block() {
+        eprintln!("cannot block SIGTERM and SIGINT");
+        return ExitCode::FAILURE;
+    }
     // Opened now, so that a missing device stops the start, not a handshake.
     if crypto::random(&mut [0u8; 32]).is_err() {
         eprintln!("cannot read /dev/urandom");
@@ -89,6 +98,29 @@ fn main() -> ExitCode {
     let server = server::Server::new(
         config, identities, PathBuf::from(ACME_DIRECTORY), Box::new(log), cap, server::PER_ADDRESS,
     );
+    // On SIGTERM or SIGINT: let nobody in any more, cut the connections
+    // that wait for a request and the tunnels, let the requests being
+    // served finish (for up to DRAIN_TIMEOUT), and exit.
+    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let stopping = std::sync::Arc::clone(&server);
+        let stopper = std::thread::Builder::new().spawn(move || {
+            let signal = signals::wait();
+            stopping.log.error(&format!(
+                "stopping on signal {signal}: letting nobody in, waiting up to {} s for the requests being served",
+                server::DRAIN_TIMEOUT.as_secs()
+            ));
+            match stopping.drain(server::DRAIN_TIMEOUT) {
+                0 => stopping.log.error("stopped"),
+                left => stopping.log.error(&format!("stopped, cutting {left} connections")),
+            }
+            std::process::exit(0);
+        });
+        if stopper.is_err() {
+            eprintln!("cannot start the thread that stops the server");
+            return ExitCode::FAILURE;
+        }
+    }
     let watched = std::sync::Arc::clone(&server);
     if std::thread::Builder::new().spawn(move || server::watch(&watched)).is_err() {
         eprintln!("cannot start the certificate watcher");

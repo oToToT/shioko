@@ -16,6 +16,7 @@ use crate::tls::conn::{self as tls, Identity, Served, TlsStream};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -52,6 +53,9 @@ const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 pub const RELOAD_INTERVAL: Duration = Duration::from_secs(60);
 /// How often at most the log says how many connections were turned away.
 const REPORT_INTERVAL: Duration = Duration::from_secs(60);
+/// How long a stopping server waits for the requests it is serving.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The certificate and key of each site, in the order of the sites; `None`
 /// for a site served over plain HTTP.
@@ -124,6 +128,13 @@ pub struct Server {
     /// Some site with a certificate has no allowlist, so over TLS a peer
     /// outside every allowlist may be served.
     public_tls: bool,
+    /// The server is stopping (`drain`): no connection is let in any more.
+    /// Set while `interruptible` is locked.
+    stopping: AtomicBool,
+    /// The client sockets of the connections a stop may cut now: those
+    /// waiting for a request head, and tunnels.
+    interruptible: Mutex<HashMap<u64, Arc<TcpStream>>>,
+    ids: AtomicU64,
 }
 
 /// What a site's certificate and key files hold, if both can be read.
@@ -170,7 +181,53 @@ impl Server {
             cap,
             per_address,
             public_tls,
+            stopping: AtomicBool::new(false),
+            interruptible: Mutex::new(HashMap::new()),
+            ids: AtomicU64::new(0),
         })
+    }
+
+    /// Connection `id`, whose client socket is `socket`, may be cut by a
+    /// stop from now (`now`), or no longer. Answers `false` if it may not
+    /// go on: the server is stopping.
+    fn interruptible(&self, id: u64, socket: Option<&Arc<TcpStream>>, now: bool) -> bool {
+        let mut cut = self.interruptible.lock().unwrap_or_else(PoisonError::into_inner);
+        if !now {
+            cut.remove(&id);
+            return true;
+        }
+        if self.stopping.load(Ordering::SeqCst) {
+            return false;
+        }
+        if let Some(socket) = socket {
+            cut.insert(id, Arc::clone(socket));
+        }
+        true
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Stops serving: lets no connection in any more, cuts those waiting
+    /// for a request head and the tunnels, and waits up to `timeout` for
+    /// the requests being served to end. Returns how many connections are
+    /// left.
+    pub fn drain(&self, timeout: Duration) -> usize {
+        {
+            let mut cut = self.interruptible.lock().unwrap_or_else(PoisonError::into_inner);
+            self.stopping.store(true, Ordering::SeqCst);
+            for (_, socket) in cut.drain() {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+        }
+        let deadline = Instant::now() + timeout;
+        let mut slots = self.slots();
+        loop {
+            let left = slots.allowed.saturating_add(slots.public);
+            let wait = deadline.saturating_duration_since(Instant::now());
+            if left == 0 || wait.is_zero() {
+                return left;
+            }
+            slots = self.freed.wait_timeout(slots, wait).unwrap_or_else(PoisonError::into_inner).0;
+        }
     }
 
     /// The pool a connection from `peer` is in, or `None` if it is to be
@@ -257,7 +314,9 @@ impl Reserved {
         let server = self.0.take()?;
         let address = address_of(peer);
         let mut slots = server.slots();
+        // A stopping server lets nobody in.
         let room = match pool {
+            _ if server.stopping.load(Ordering::SeqCst) => false,
             Some(Pool::Allowed) => slots.allowed < server.cap,
             Some(Pool::Public) => {
                 slots.public < server.cap && slots.addresses.get(&address).copied().unwrap_or(0) < server.per_address
@@ -330,6 +389,17 @@ fn connection(server: &Server, client: TcpStream, secure: bool) {
     let Ok(peer) = client.peer_addr() else { return };
     let _ = client.set_write_timeout(Some(WRITE_TIMEOUT));
     let _ = client.set_nodelay(true);
+    let id = server.ids.fetch_add(1, Ordering::Relaxed);
+    let socket = client.try_clone().ok().map(Arc::new);
+    let interruptible = |now| server.interruptible(id, socket.as_ref(), now);
+    // However the connection ends, a stop has nothing of it left to cut.
+    struct Gone<'a>(&'a Server, u64);
+    impl Drop for Gone<'_> {
+        fn drop(&mut self) {
+            self.0.interruptible(self.1, None, false);
+        }
+    }
+    let _gone = Gone(server, id);
     let context = |tls_site| Context {
         config: &server.config,
         connect: &Tcp,
@@ -339,6 +409,7 @@ fn connection(server: &Server, client: TcpStream, secure: bool) {
         acme: &server.acme,
         clock: || SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()),
         timeouts: proxy::Timeouts::STANDARD,
+        interruptible: &interruptible,
     };
     if !secure {
         proxy::serve(&client, &context(None));
@@ -700,6 +771,100 @@ mod tests {
         assert_eq!(locked.used(), 0);
         let open = server(&format!("{tls}\n[media.test]\nupstream = a:1\ncert = /certs/chain.pem\nkey = /certs/key.pem\n"));
         assert_eq!(open.pool_of(outside, true), Some(Pool::Public));
+    }
+
+    /// The server ended this connection: its stream ends, or is reset,
+    /// rather than going silent.
+    fn ended(mut stream: &TcpStream) -> bool {
+        match stream.read(&mut [0u8; 1]) {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => !matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
+        }
+    }
+
+    /// Reads from `stream` until what came ends with `end`.
+    fn read_until(stream: &mut TcpStream, end: &[u8]) -> Vec<u8> {
+        let mut got = Vec::new();
+        let mut byte = [0u8; 1];
+        while !got.ends_with(end) {
+            assert_eq!(stream.read(&mut byte).unwrap(), 1, "ended early after {:?}", String::from_utf8_lossy(&got));
+            got.push(byte[0]);
+        }
+        got
+    }
+
+    /// A stop lets the requests being served finish, cuts at once the
+    /// connections that wait for a request and the tunnels, and lets nobody
+    /// in any more.
+    #[test]
+    fn a_stop_lets_requests_finish_and_cuts_the_rest() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let up = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut connection in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") && connection.read(&mut byte).unwrap_or(0) == 1 {
+                        head.push(byte[0]);
+                    }
+                    if head.starts_with(b"GET /ws ") {
+                        let _ = connection.write_all(
+                            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+                        );
+                        let mut space = [0u8; 64];
+                        while let Ok(n) = connection.read(&mut space) {
+                            if n == 0 || connection.write_all(&space[..n]).is_err() {
+                                break;
+                            }
+                        }
+                        return;
+                    }
+                    if head.starts_with(b"GET /slow ") {
+                        std::thread::sleep(Duration::from_millis(700));
+                    }
+                    let _ = connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                });
+            }
+        });
+        let (server, address) = start(&format!("[site.test]\nupstream = {up}\nwebsocket = yes\n"), 8);
+        let connect = || {
+            let stream = TcpStream::connect(address).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+        };
+        // A request being served, its upstream slow to answer.
+        let mut slow = connect();
+        slow.write_all(b"GET /slow HTTP/1.1\r\nHost: site.test\r\n\r\n").unwrap();
+        // A kept connection waiting for its next request.
+        let mut kept = connect();
+        kept.write_all(b"GET / HTTP/1.1\r\nHost: site.test\r\n\r\n").unwrap();
+        read_until(&mut kept, b"\r\n\r\nok");
+        // A connection that has sent nothing yet, and a tunnel.
+        let quiet = connect();
+        let mut tunnel = connect();
+        tunnel
+            .write_all(b"GET /ws HTTP/1.1\r\nHost: site.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+            .unwrap();
+        read_until(&mut tunnel, b"\r\n\r\n");
+        // Four connections and the slot the accept loop holds.
+        wait_until(|| server.used() == 5);
+
+        let stopping = Arc::clone(&server);
+        let started = Instant::now();
+        let drain = std::thread::spawn(move || stopping.drain(Duration::from_secs(5)));
+        for (what, stream) in [("kept", &kept), ("quiet", &quiet), ("tunnel", &tunnel)] {
+            assert!(ended(stream), "the {what} connection was not cut");
+        }
+        let late = connect();
+        let _ = (&late).write_all(b"GET / HTTP/1.1\r\nHost: site.test\r\n\r\n");
+        assert!(ended(&late), "a connection was let in after the stop");
+        // The request being served is answered whole, and then the
+        // connection ends.
+        assert!(read_to_end(&slow).ends_with("\r\n\r\nok"));
+        assert_eq!(drain.join().unwrap(), 0, "connections were left when the drain ended");
+        assert!(started.elapsed() < Duration::from_secs(3), "the drain waited for its deadline");
     }
 
     #[test]
