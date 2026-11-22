@@ -830,8 +830,18 @@ port 80 is reachable by the ACME server.
 - **The TLS code is new and ours.** It is the largest unverified-by-proof part;
   the mitigations are the spec conformance tests, interop, tlsfuzzer and
   fuzzing.
-- **TLA+ checks the model.** The mechanical link covers the two state
-  machines, not the byte-level parsers or the threading code.
+- **TLA+ checks bounded models, and only of the designs.** TLC explores
+  every state, but within bounds: `Handshake.tla` with sequence numbers up
+  to 2 and one key update in each direction (`MaxSeq = 2`, `MaxGen = 1`),
+  `Server.tla` with a cap of 2 and 3 connections. `Http.tla`'s functions
+  are checked on every input of their finite domains. The real server at
+  full size is checked against the specs only along the paths recorded
+  runs took (tlsfuzzer against `Handshake.tla`, an end-to-end run with 512
+  slots against `Server.tla`). Outside the specs altogether: byte-level
+  parsing, record framing and reassembly (Kani proofs up to small sizes,
+  mutation tests, tlsfuzzer), the cryptography (libcrux, test vectors),
+  and the operating system: file descriptors, blocking reads and writes,
+  timeouts (tests, the soak run). A bug there is not one TLA+ would catch.
 - **Building needs crates.io.** `Cargo.lock`'s checksums make a changed
   crate fail the build, but a build cannot happen while crates.io (or a
   mirror of it) is unreachable, and the crates' build scripts run on the

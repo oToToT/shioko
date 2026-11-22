@@ -20,7 +20,11 @@ dependencies at run time.
 It is written in Rust with `unsafe` forbidden, on top of libcrux, a
 formally verified crypto library. The TLS and HTTP state machines and the
 threading are specified in TLA+ and model-checked, and the code is tested
-against those specs (see "Checking it").
+against those specs (see "Checking it"). The models are checked within
+small bounds and cover the designs only: parsing, the cryptography and the
+operating system (file descriptors, blocking I/O) are checked by tests,
+proofs of small inputs and fuzzing instead, as `SPEC.md` section 10 sets
+out.
 
 Status: version 0.1, new. It is tested as described below, but has not yet
 had much use. There is no warranty (see the licenses).
