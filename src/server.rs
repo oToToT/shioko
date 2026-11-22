@@ -1,44 +1,57 @@
-//! Listening, the cap on connections, and one thread per connection.
+//! Listening, the caps on connections, and one thread per connection.
 //!
 //! An accept loop takes a slot before it accepts, so that when the server
-//! is full new connections wait in the kernel's queue. The slot goes to the
-//! thread that serves the connection and comes back when that thread ends,
-//! however it ends. `spec/Server.tla` is the design this follows.
+//! is full new connections wait in the kernel's queue. Once the connection
+//! has come, the slot is from one of two pools: one for peers inside some
+//! site's allowlist, one for everyone else, where one address may also hold
+//! only so many. A connection whose pool or address has no room is closed
+//! at once. Otherwise the slot goes to the thread that serves the
+//! connection and comes back when that thread ends, however it ends.
+//! `spec/Server.tla` is the design this follows.
 
 use crate::config::Config;
 use crate::http::proxy::{self, Context, Tcp};
 use crate::log::Log;
 use crate::tls::conn::{self as tls, Identity, Served, TlsStream};
-use std::net::{TcpListener, TcpStream};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv6Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// The most connections served at once.
+/// The most connections served at once from each pool.
 pub const CONNECTIONS: usize = 512;
+/// The most connections at once from one address outside every allowlist:
+/// an IPv4 address, or an IPv6 /64.
+pub const PER_ADDRESS: usize = 64;
 /// The file descriptors the process needs besides its connections': the
 /// standard streams, the two listeners, /dev/urandom, and room for a
 /// certificate or token file being read.
 pub const RESERVED_FILES: usize = 16;
 
-/// The connection cap that fits the open-file limit, given the text of
-/// /proc/self/limits: a connection holds up to two descriptors, its
-/// client's and its upstream's. With no limit to read, or none set,
-/// `CONNECTIONS`.
+/// The cap of each pool that fits the open-file limit, given the text of
+/// /proc/self/limits: the two pools together may hold twice the cap of
+/// connections, and a connection holds up to two descriptors, its client's
+/// and its upstream's. With no limit to read, or none set, `CONNECTIONS`.
 pub fn cap_for(limits: &str) -> usize {
     let soft = limits
         .lines()
         .find_map(|line| line.strip_prefix("Max open files"))
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|value| value.parse::<usize>().ok());
-    soft.map_or(CONNECTIONS, |files| (files.saturating_sub(RESERVED_FILES) / 2).clamp(1, CONNECTIONS))
+    soft.map_or(CONNECTIONS, |files| (files.saturating_sub(RESERVED_FILES) / 4).clamp(1, CONNECTIONS))
 }
+
+/// The open-file limit that `CONNECTIONS` in each pool needs.
+pub const FILES_NEEDED: usize = 4 * CONNECTIONS + RESERVED_FILES;
 /// How long a write to a client may block.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long an accept loop rests after `accept` failed.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 /// How often the certificate and key files are read again.
 pub const RELOAD_INTERVAL: Duration = Duration::from_secs(60);
+/// How often at most the log says how many connections were turned away.
+const REPORT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// The certificate and key of each site, in the order of the sites; `None`
 /// for a site served over plain HTTP.
@@ -46,6 +59,51 @@ pub type Identities = Vec<Option<Arc<Identity>>>;
 
 /// What a site's certificate and key files held, if both could be read.
 type Files = Option<(Vec<u8>, Vec<u8>)>;
+
+/// Which pool a connection's slot is from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pool {
+    /// The peer is inside some site's allowlist.
+    Allowed,
+    /// Everyone else.
+    Public,
+}
+
+impl Pool {
+    /// Its name in a recorded run.
+    #[cfg_attr(not(feature = "record"), allow(dead_code))]
+    fn name(self) -> &'static str {
+        match self {
+            Pool::Allowed => "allowed",
+            Pool::Public => "public",
+        }
+    }
+}
+
+/// Where the public pool counts a connection from: its IPv4 address, or
+/// the /64 of its IPv6 address. An IPv4 address written as IPv6 (as the
+/// dual-stack listener gives them) counts as itself.
+fn address_of(peer: IpAddr) -> IpAddr {
+    match peer.to_canonical() {
+        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & !u128::from(u64::MAX))),
+        v4 => v4,
+    }
+}
+
+/// The server's slots.
+#[derive(Default)]
+struct Slots {
+    /// Taken by accept loops waiting for a connection, and by connections.
+    used: usize,
+    /// The connections of each pool.
+    allowed: usize,
+    public: usize,
+    /// The connections of the public pool, by address.
+    addresses: HashMap<IpAddr, usize>,
+    /// Connections turned away since the log last said so, and when it did.
+    turned_away: usize,
+    reported: Option<Instant>,
+}
 
 /// What every connection shares.
 pub struct Server {
@@ -57,11 +115,15 @@ pub struct Server {
     files: Mutex<Vec<Files>>,
     pub acme: PathBuf,
     pub log: Box<dyn Log + Send>,
-    /// Connection slots: how many are taken, the signal that one came back,
-    /// and how many there are.
-    used: Mutex<usize>,
+    /// Connection slots, the signal that one came back, the cap of each
+    /// pool and of each address in the public pool.
+    slots: Mutex<Slots>,
     freed: Condvar,
     cap: usize,
+    per_address: usize,
+    /// Some site with a certificate has no allowlist, so over TLS a peer
+    /// outside every allowlist may be served.
+    public_tls: bool,
 }
 
 /// What a site's certificate and key files hold, if both can be read.
@@ -78,25 +140,57 @@ pub fn watch(server: &Server) {
     }
 }
 
-/// One of the server's connection slots. Dropping it gives the slot back.
-pub struct Slot(Arc<Server>);
+/// A slot an accept loop took before it knew which pool the connection
+/// would be in. Dropping it gives it back.
+pub struct Reserved(Option<Arc<Server>>);
+
+/// A connection's slot. Dropping it gives it back to its pool.
+pub struct Slot {
+    server: Arc<Server>,
+    pool: Pool,
+    address: IpAddr,
+}
 
 impl Server {
     pub fn new(
         config: Config, identities: Vec<Option<Identity>>, acme: PathBuf, log: Box<dyn Log + Send>, cap: usize,
+        per_address: usize,
     ) -> Arc<Server> {
         let files = config.sites.iter().map(read_identity_files).collect();
         let identities = RwLock::new(Arc::new(identities.into_iter().map(|i| i.map(Arc::new)).collect()));
+        let public_tls = config.sites.iter().any(|site| site.cert.is_some() && site.allow.is_none());
         Arc::new(Server {
             config,
             identities,
             files: Mutex::new(files),
             acme,
             log,
-            used: Mutex::new(0),
+            slots: Mutex::new(Slots::default()),
             freed: Condvar::new(),
             cap,
+            per_address,
+            public_tls,
         })
+    }
+
+    /// The pool a connection from `peer` is in, or `None` if it is to be
+    /// turned away whatever the room: over TLS, a peer outside every
+    /// allowlist when every site with a certificate has one.
+    pub fn pool_of(&self, peer: IpAddr, secure: bool) -> Option<Pool> {
+        let peer = peer.to_canonical();
+        if self.config.sites.iter().any(|site| site.allow.is_some() && site.allows(peer)) {
+            Some(Pool::Allowed)
+        } else if secure && !self.public_tls {
+            None
+        } else {
+            Some(Pool::Public)
+        }
+    }
+
+    /// The slots, which are left consistent at every step, so a lock
+    /// poisoned by a panic elsewhere can still be used.
+    fn slots(&self) -> std::sync::MutexGuard<'_, Slots> {
+        self.slots.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The identities in place now.
@@ -138,31 +232,96 @@ impl Server {
 
     #[cfg(test)]
     pub fn used(&self) -> usize {
-        *self.used.lock().unwrap_or_else(PoisonError::into_inner)
+        self.slots().used
     }
 }
 
-impl Slot {
-    /// Takes a slot, waiting for one while the server is full.
-    pub fn take(server: &Arc<Server>) -> Slot {
-        // The count is a plain number that is always left consistent, so a
-        // lock poisoned by a panic elsewhere can still be used.
-        let mut used = server.used.lock().unwrap_or_else(PoisonError::into_inner);
-        while *used >= server.cap {
-            used = server.freed.wait(used).unwrap_or_else(PoisonError::into_inner);
+impl Reserved {
+    /// Takes a slot, waiting for one while both pools are full.
+    pub fn take(server: &Arc<Server>) -> Reserved {
+        let mut slots = server.slots();
+        while slots.used >= server.cap.saturating_mul(2) {
+            slots = server.freed.wait(slots).unwrap_or_else(PoisonError::into_inner);
         }
-        *used = used.saturating_add(1);
+        slots.used = slots.used.saturating_add(1);
         record!("reserve");
-        Slot(Arc::clone(server))
+        Reserved(Some(Arc::clone(server)))
+    }
+
+    /// The slot of a connection from `peer` in `pool`, if the pool, and in
+    /// the public pool the peer's address, has room. If not, the slot is
+    /// given back and the connection is to be closed. `name` is the
+    /// connection's in a recorded run.
+    #[cfg_attr(not(feature = "record"), allow(unused_variables))]
+    pub fn admit(mut self, pool: Option<Pool>, peer: IpAddr, name: &str) -> Option<Slot> {
+        let server = self.0.take()?;
+        let address = address_of(peer);
+        let mut slots = server.slots();
+        let room = match pool {
+            Some(Pool::Allowed) => slots.allowed < server.cap,
+            Some(Pool::Public) => {
+                slots.public < server.cap && slots.addresses.get(&address).copied().unwrap_or(0) < server.per_address
+            }
+            None => false,
+        };
+        let Some(pool) = pool.filter(|_| room) else {
+            slots.used = slots.used.saturating_sub(1);
+            record!("turn_away {} {address}", pool.unwrap_or(Pool::Public).name());
+            slots.turned_away = slots.turned_away.saturating_add(1);
+            if slots.reported.is_none_or(|at| at.elapsed() >= REPORT_INTERVAL) {
+                server.log.error(&format!(
+                    "turned away {} connections: no room for them in their pool or for their address",
+                    slots.turned_away
+                ));
+                slots.turned_away = 0;
+                slots.reported = Some(Instant::now());
+            }
+            server.freed.notify_one();
+            return None;
+        };
+        match pool {
+            Pool::Allowed => slots.allowed = slots.allowed.saturating_add(1),
+            Pool::Public => {
+                slots.public = slots.public.saturating_add(1);
+                let count = slots.addresses.entry(address).or_insert(0);
+                *count = count.saturating_add(1);
+            }
+        }
+        record!("accept {name} {} {address}", pool.name());
+        drop(slots);
+        Some(Slot { server, pool, address })
+    }
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        if let Some(server) = self.0.take() {
+            let mut slots = server.slots();
+            slots.used = slots.used.saturating_sub(1);
+            record!("release");
+            server.freed.notify_one();
+        }
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        let mut used = self.0.used.lock().unwrap_or_else(PoisonError::into_inner);
-        *used = used.saturating_sub(1);
+        let mut slots = self.server.slots();
+        slots.used = slots.used.saturating_sub(1);
+        match self.pool {
+            Pool::Allowed => slots.allowed = slots.allowed.saturating_sub(1),
+            Pool::Public => {
+                slots.public = slots.public.saturating_sub(1);
+                if let Some(count) = slots.addresses.get_mut(&self.address) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        slots.addresses.remove(&self.address);
+                    }
+                }
+            }
+        }
         record!("release");
-        self.0.freed.notify_one();
+        self.server.freed.notify_one();
     }
 }
 
@@ -204,14 +363,23 @@ pub fn listen(server: &Arc<Server>, listener: &TcpListener, secure: bool) {
     let me = format!("l{}", if secure { 443 } else { 80 });
     #[cfg(feature = "record")]
     crate::record::be(me.clone(), false);
+    if secure {
+        record!("public_tls {}", server.public_tls);
+    }
     loop {
-        let slot = Slot::take(server);
+        let reserved = Reserved::take(server);
         match listener.accept() {
-            Ok((client, _)) => {
-                let shared = Arc::clone(server);
+            Ok((client, peer)) => {
                 #[cfg(feature = "record")]
                 let name = crate::record::connection();
-                record!("accept {name}");
+                #[cfg(not(feature = "record"))]
+                let name = String::new();
+                let Some(slot) = reserved.admit(server.pool_of(peer.ip(), secure), peer.ip(), &name) else {
+                    // Turned away: closed at once.
+                    drop(client);
+                    continue;
+                };
+                let shared = Arc::clone(server);
                 // A slot dropped from here on is the connection's.
                 #[cfg(feature = "record")]
                 crate::record::be(format!("{name} up"), false);
@@ -230,7 +398,7 @@ pub fn listen(server: &Arc<Server>, listener: &TcpListener, secure: bool) {
                 }
             }
             Err(error) => {
-                drop(slot);
+                drop(reserved);
                 server.log.error(&format!("accept failed: {error}"));
                 std::thread::sleep(ACCEPT_PAUSE);
             }
@@ -261,8 +429,9 @@ mod tests {
             )
         };
         let cap = cap_for(&limits("1024"));
-        assert!(2 * cap + RESERVED_FILES <= 1024, "{cap} connections do not fit 1024 descriptors");
-        assert_eq!(cap, 504);
+        assert!(4 * cap + RESERVED_FILES <= 1024, "two pools of {cap} connections do not fit 1024 descriptors");
+        assert_eq!(cap, 252);
+        assert_eq!(cap_for(&limits(&FILES_NEEDED.to_string())), CONNECTIONS);
         assert_eq!(cap_for(&limits("4096")), CONNECTIONS);
         assert_eq!(cap_for(&limits("unlimited")), CONNECTIONS);
         assert_eq!(cap_for(&limits("10")), 1);
@@ -302,7 +471,8 @@ mod tests {
         let config = crate::config::Config::load(&conf).unwrap();
         let first = Identity::load(&dir.join("chain.pem"), &dir.join("key.pem")).unwrap();
         let log = Arc::new(Kept::default());
-        let server = Server::new(config, vec![Some(first)], "/nonexistent".into(), Box::new(Shared(Arc::clone(&log))), 4);
+        let server =
+            Server::new(config, vec![Some(first)], "/nonexistent".into(), Box::new(Shared(Arc::clone(&log))), 4, PER_ADDRESS);
         let chain = || server.identities()[0].as_ref().unwrap().chain.clone();
 
         let before = server.identities();
@@ -328,7 +498,7 @@ mod tests {
     fn start(sites: &str, cap: usize) -> (Arc<Server>, std::net::SocketAddr) {
         let config = parse(sites).unwrap();
         let identities = config.sites.iter().map(|_| None).collect();
-        let server = Server::new(config, identities, "/nonexistent".into(), Box::new(Kept::default()), cap);
+        let server = Server::new(config, identities, "/nonexistent".into(), Box::new(Kept::default()), cap, PER_ADDRESS);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let shared = Arc::clone(&server);
@@ -442,26 +612,94 @@ mod tests {
         let up = upstream(|_, connection| {
             let _ = connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         });
-        // Three slots, three connections: the accept loop then waits for a
-        // slot before it accepts again.
+        // Three slots in the public pool, three connections from 127.0.0.1:
+        // the pool is full, and the accept loop holds a slot of its own.
         let (server, address) = start(&format!("[site.test]\nupstream = {up}\n"), 3);
         let first = TcpStream::connect(address).unwrap();
         let second = TcpStream::connect(address).unwrap();
         let third = TcpStream::connect(address).unwrap();
-        wait_until(|| server.used() == 3);
-        // A fourth connection is made by the kernel but nobody serves it.
+        wait_until(|| server.used() == 4);
+        // A fourth connection is turned away at once: closed, unanswered.
         let mut fourth = TcpStream::connect(address).unwrap();
-        fourth.write_all(b"GET / HTTP/1.1\r\nHost: site.test\r\nConnection: close\r\n\r\n").unwrap();
-        fourth.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
-        let mut byte = [0u8; 1];
-        assert!(fourth.read(&mut byte).is_err(), "the fourth connection was served");
-        assert_eq!(server.used(), 3);
-        // One of the first three goes away, and the fourth gets its turn.
-        drop(first);
+        let _ = fourth.write_all(b"GET / HTTP/1.1\r\nHost: site.test\r\nConnection: close\r\n\r\n");
         fourth.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        assert!(read_to_end(&fourth).ends_with("\r\n\r\nok"));
+        let mut byte = [0u8; 1];
+        assert!(matches!(fourth.read(&mut byte), Ok(0) | Err(_)), "the fourth connection was served");
+        wait_until(|| server.used() == 4);
+        // One of the first three goes away, and a new one gets in.
+        drop(first);
+        wait_until(|| server.used() == 3);
+        let mut fifth = TcpStream::connect(address).unwrap();
+        fifth.write_all(b"GET / HTTP/1.1\r\nHost: site.test\r\nConnection: close\r\n\r\n").unwrap();
+        fifth.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        assert!(read_to_end(&fifth).ends_with("\r\n\r\nok"));
         drop((second, third));
         wait_until(|| server.used() == 1);
+    }
+
+    /// The pools of the two kinds of peer are apart: a flood from outside
+    /// the allowlists, however many addresses it comes from, cannot take
+    /// the slots of peers inside them, nor the other way round. In the
+    /// public pool one address (an IPv6 /64) holds only so many.
+    #[test]
+    fn pools_keep_floods_apart() {
+        let config = parse(
+            "[vault.test]\nupstream = a:1\ncert = /certs/chain.pem\nkey = /certs/key.pem\nallow = 10.0.0.0/8\n\n\
+             [wiki.test]\nupstream = a:1\n",
+        )
+        .unwrap();
+        let server = Server::new(config, vec![None, None], "/nonexistent".into(), Box::new(Kept::default()), 3, 2);
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let admit = |peer: &str, secure: bool| {
+            let peer = ip(peer);
+            Reserved::take(&server).admit(server.pool_of(peer, secure), peer, "")
+        };
+        // One address holds two public slots; a third is turned away, also
+        // when it comes as an IPv4 address written as IPv6.
+        let a = [admit("192.0.2.1", false).unwrap(), admit("192.0.2.1", false).unwrap()];
+        assert!(admit("192.0.2.1", false).is_none());
+        assert!(admit("::ffff:192.0.2.1", false).is_none());
+        // Another address takes the last public slot; the pool is then full.
+        let b = admit("192.0.2.2", false).unwrap();
+        assert!(admit("192.0.2.3", false).is_none());
+        // The allowed pool has all of its slots all the same; a fourth
+        // allowed connection is turned away while a public slot comes back.
+        let mut allowed: Vec<Slot> = (1..=2).map(|n| admit(&format!("10.0.0.{n}"), true).unwrap()).collect();
+        allowed.push(admit("::ffff:10.0.0.3", true).unwrap());
+        assert_eq!(server.used(), 6, "both pools full");
+        drop(b);
+        assert!(admit("10.0.0.9", false).is_none(), "a fourth allowed connection got in");
+        // A slot that comes back is free for the next connection.
+        let c = admit("2001:db8::1", false).unwrap();
+        drop(a);
+        // IPv6 addresses of one /64 are one address.
+        let d = admit("2001:db8::2", false).unwrap();
+        assert!(admit("2001:db8::3", false).is_none());
+        let e = admit("2001:db8:0:1::1", false).unwrap();
+        drop((c, d, e, allowed));
+        assert_eq!(server.used(), 0);
+    }
+
+    /// Over TLS, a peer outside every allowlist is turned away at once when
+    /// every site with a certificate has an allowlist: no site could serve
+    /// it. Once one site with a certificate has none, it is let in.
+    #[test]
+    fn over_tls_only_peers_some_site_serves_are_let_in() {
+        let tls = "[vault.test]\nupstream = a:1\ncert = /certs/chain.pem\nkey = /certs/key.pem\nallow = 10.0.0.0/8\n";
+        let server = |text: &str| {
+            let config = parse(text).unwrap();
+            let none = config.sites.iter().map(|_| None).collect();
+            Server::new(config, none, "/nonexistent".into(), Box::new(Kept::default()), 3, 2)
+        };
+        let outside: IpAddr = "192.0.2.1".parse().unwrap();
+        let locked = server(tls);
+        assert_eq!(locked.pool_of(outside, true), None);
+        assert_eq!(locked.pool_of(outside, false), Some(Pool::Public), "port 80 serves redirects and tokens to all");
+        assert_eq!(locked.pool_of("10.1.2.3".parse().unwrap(), true), Some(Pool::Allowed));
+        assert!(Reserved::take(&locked).admit(None, outside, "").is_none());
+        assert_eq!(locked.used(), 0);
+        let open = server(&format!("{tls}\n[media.test]\nupstream = a:1\ncert = /certs/chain.pem\nkey = /certs/key.pem\n"));
+        assert_eq!(open.pool_of(outside, true), Some(Pool::Public));
     }
 
     #[test]
@@ -470,11 +708,15 @@ mod tests {
         wait_until(|| server.used() == 1);
         let shared = Arc::clone(&server);
         let panicking = std::thread::spawn(move || {
-            let _slot = Slot::take(&shared);
+            let peer: IpAddr = "192.0.2.1".parse().unwrap();
+            let _slot = Reserved::take(&shared).admit(Some(Pool::Public), peer, "").unwrap();
             assert_eq!(shared.used(), 2);
             panic!("a connection thread dies");
         });
         assert!(panicking.join().is_err());
+        assert_eq!(server.used(), 1);
+        // A reserved slot that is never admitted comes back too.
+        drop(Reserved::take(&server));
         assert_eq!(server.used(), 1);
     }
 }
@@ -527,7 +769,7 @@ mod tls_tests {
         ))
         .unwrap();
         let identity = Identity::load(&certs("site.test.chain.pem"), &certs("site.test.key")).unwrap();
-        let server = Server::new(config, vec![Some(identity)], "/nonexistent".into(), Box::new(Kept::default()), 8);
+        let server = Server::new(config, vec![Some(identity)], "/nonexistent".into(), Box::new(Kept::default()), 8, PER_ADDRESS);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let shared = Arc::clone(&server);

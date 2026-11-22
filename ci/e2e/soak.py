@@ -4,10 +4,13 @@
 
 1. 500 connections at once, each sending requests on one kept-alive TLS
    connection for MINUTES; every response is checked.
-2. More slow clients than the connection cap (512): each trickles a
-   request head a byte at a time. The head deadline (60 s) must end them,
-   and the server must serve normally afterwards. How long an ordinary
-   request waits while they hold every slot is measured.
+2. Slow clients, 600 from outside and then 600 from inside the
+   allowlists: each trickles a request head a byte at a time. From outside,
+   one address may hold only 64 connections; from inside, the pool holds
+   512. The rest are turned away at once, and so is another request from
+   the same side, while a request from the other side is served at once.
+   The head deadline (60 s) must end the slow ones, and the server must
+   serve normally afterwards.
 3. 50 WebSockets open for MINUTES, a message a second each, every echo
    checked.
 
@@ -20,7 +23,7 @@ import sys
 import threading
 import time
 
-from e2e import SHIOKO, connect, exchange, pattern, ws_open, ws_receive, ws_send
+from e2e import ME, SHIOKO, connect, exchange, pattern, ws_open, ws_receive, ws_send
 
 SERVER = SHIOKO["inside"]
 numbers = {}
@@ -65,35 +68,52 @@ def many_connections(count, seconds):
     }
 
 
-def slow_clients(count):
-    socks, opened = [], 0
+def gone(s):
+    """The server has closed this connection (we have sent nothing it
+    would answer)."""
+    s.setblocking(False)
+    try:
+        closed = s.recv(1) == b""
+    except BlockingIOError:
+        closed = False
+    except OSError:
+        closed = True
+    s.setblocking(True)
+    return closed
+
+
+def ordinary(side):
+    """How long a plain request from `side` took to be answered, or None if
+    it was not."""
+    t = time.time()
+    try:
+        with connect(SHIOKO[side], None, side=side, timeout=30) as sock:
+            if exchange(sock, "GET", "/", "nowhere.test").status == 404:
+                return round(time.time() - t, 3)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def slow_clients(count, side):
+    other = "inside" if side == "outside" else "outside"
+    socks = []
     for _ in range(count):
         try:
-            s = socket.create_connection((SERVER, 80), 5)
+            s = socket.create_connection((SHIOKO[side], 80), 5, source_address=(ME[side], 0))
             s.sendall(b"G")
             socks.append(s)
-            opened += 1
         except OSError:
             break
     started = time.time()
-    # While they hold the slots, an ordinary request waits.
-    waited = None
-
-    def ordinary():
-        nonlocal waited
-        t = time.time()
-        try:
-            with connect(SERVER, None, timeout=120) as sock:
-                r = exchange(sock, "GET", "/", "nowhere.test")
-                if r.status == 404:
-                    waited = time.time() - t
-        except OSError:
-            pass
     time.sleep(2)
-    probe = threading.Thread(target=ordinary)
-    probe.start()
+    alive = [s for s in socks if not gone(s)]
+    held = len(alive)
+    # While they hold their slots: the other side is served at once, the
+    # same side is turned away.
+    other_took = ordinary(other)
+    same_took = ordinary(side)
     # Trickle a byte every 5 s until shioko gives up on them.
-    alive = list(socks)
     while alive and time.time() - started < 120:
         time.sleep(5)
         still = []
@@ -103,35 +123,16 @@ def slow_clients(count):
                 still.append(s)
             except OSError:
                 s.close()
-        alive = still
-        # A closed connection only shows on the next send or a read.
-        for s in list(alive):
-            s.setblocking(False)
-            try:
-                gone = s.recv(1) == b""
-            except BlockingIOError:
-                gone = False
-            except OSError:
-                gone = True
-            if gone:
-                alive.remove(s)
-                s.close()
-            else:
-                s.setblocking(True)
+        alive = [s for s in still if not gone(s)]
     ended = time.time() - started
-    probe.join()
-    for s in alive:
+    for s in socks:
         s.close()
-    after = None
-    t = time.time()
-    with connect(SERVER, "chat.test") as sock:
-        if exchange(sock, "GET", "/bytes?n=10", "chat.test").status == 200:
-            after = round(time.time() - t, 3)
-    numbers["slow clients"] = {
-        "opened": opened, "still open after 120 s": len(alive),
-        "all ended after s": round(ended, 1),
-        "an ordinary request waited s": round(waited, 1) if waited else None,
-        "a request afterwards took s": after,
+    numbers["slow clients from " + side] = {
+        "opened": len(socks), "held": held, "turned away": len(socks) - held,
+        "still open after 120 s": len(alive), "all ended after s": round(ended, 1),
+        "a request from %s meanwhile took s" % other: other_took,
+        "a request from %s meanwhile took s" % side: same_took,
+        "a request afterwards took s": ordinary(side),
     }
 
 
@@ -176,14 +177,19 @@ def websockets(count, seconds):
 if __name__ == "__main__":
     minutes = float(sys.argv[1]) if len(sys.argv) > 1 else 10
     for name, run in (("500 connections", lambda: many_connections(500, int(minutes * 60))),
-                      ("600 slow clients", lambda: slow_clients(600)),
+                      ("600 slow clients from outside", lambda: slow_clients(600, "outside")),
+                      ("600 slow clients from inside", lambda: slow_clients(600, "inside")),
                       ("50 WebSockets", lambda: websockets(50, int(minutes * 60)))):
         print("== " + name, flush=True)
         run()
         print(json.dumps(numbers, indent=1), flush=True)
     with open("/results/soak.json", "w") as f:
         json.dump(numbers, f, indent=1)
-    bad = numbers["connections"]["failed connections"] or numbers["websockets"]["failed"] \
-        or numbers["slow clients"]["still open after 120 s"] or \
-        not numbers["slow clients"]["a request afterwards took s"]
+    bad = numbers["connections"]["failed connections"] or numbers["websockets"]["failed"]
+    for side, other, cap in (("outside", "inside", 64), ("inside", "outside", 512)):
+        slow = numbers["slow clients from " + side]
+        meanwhile = slow["a request from %s meanwhile took s" % other]
+        bad = bad or slow["held"] != cap or slow["still open after 120 s"] \
+            or slow["a request from %s meanwhile took s" % side] is not None \
+            or meanwhile is None or meanwhile > 1 or not slow["a request afterwards took s"]
     sys.exit(1 if bad else 0)

@@ -8,6 +8,9 @@
 RECORD is what a shioko built with --features record wrote to the file
 SHIOKO_RECORD names: one line per step of a thread, "WHO WHAT", where WHO
 is a listener (l80, l443) or a connection's pump ("c7 up", "c7 down").
+A listener's steps are "reserve", "release" (accept() failed), "accept
+cN POOL ADDRESS", "turn_away POOL ADDRESS" and, once at its start,
+"public_tls true|false".
 This turns it into the sequence of steps of spec/Server.tla that the run
 took (module ServerRecorded) and has TLC follow it with
 spec/ServerTrace.tla, checking the spec's invariants at every step.
@@ -23,7 +26,8 @@ What the log says is turned into the spec's steps as follows:
   the spec its read ends first, and that is the order given here. Moving
   the end of a read earlier is safe: it touches nothing another thread
   sees.
-- connections get the names 1, 2, ... of the spec, reused once one ends.
+- connections get the names 1, 2, ... of the spec, reused once one ends,
+  and addresses the names a1, a2, ...
 """
 
 import os
@@ -32,7 +36,8 @@ import shutil
 import subprocess
 import sys
 
-CAP = 512
+CAP = 512          # each pool
+PER_ADDRESS = 64
 
 
 def steps(lines):
@@ -40,30 +45,41 @@ def steps(lines):
     events = []
     for line in lines:
         parts = line.split()
-        if parts:
-            who, what = parts[:-1], parts[-1]
-            if what.startswith("c") and who[0].startswith("l"):  # accept cN
-                who, what = [parts[0]], "accept " + parts[-1]
-            events.append((who, what))
+        if not parts:
+            continue
+        if parts[0].startswith("l"):
+            events.append(([parts[0]], parts[1], parts[2:]))
+        else:
+            events.append((parts[:2], parts[2], parts[3:]))
 
     out = []
-    names, free, plain = {}, list(range(CAP, 0, -1)), set()
+    names, free, plain = {}, list(range(2 * CAP, 0, -1)), set()
+    addresses = {}
     state = {}  # (conn, side) -> "read", "wrote" (data sent, lock to come), "ended"
 
-    def emit(what, conn=None, side=None, listener=None):
-        out.append(dict(what=what, c=names.get(conn, 0), p=side or "",
-                        l=listener or ""))
+    def address(text):
+        return addresses.setdefault(text, "a%d" % (len(addresses) + 1))
 
-    for index, (who, what) in enumerate(events):
-        if what.startswith("accept "):
-            conn = what.split()[1]
-            names[conn] = free.pop()
-            if who[0] == "l80":
-                plain.add(conn)
-            emit("accept", conn, listener=who[0])
-            continue
-        if len(who) == 1 and who[0].startswith("l"):
-            emit({"reserve": "reserve", "release": "fail"}[what], listener=who[0])
+    def emit(what, conn=None, side=None, listener=None, pool="none", where="none"):
+        out.append(dict(what=what, c=names.get(conn, 0), p=side or "",
+                        l=listener or "", k=pool, a=where))
+
+    for index, (who, what, args) in enumerate(events):
+        if len(who) == 1:
+            listener = who[0]
+            if what == "accept":
+                conn, pool, where = args
+                names[conn] = free.pop()
+                if listener == "l80":
+                    plain.add(conn)
+                emit("accept", conn, listener=listener, pool=pool, where=address(where))
+            elif what == "turn_away":
+                pool, where = args
+                emit("turn_away", listener=listener, pool=pool, where=address(where))
+            elif what == "public_tls":
+                steps.public_tls = args == ["true"]
+            else:
+                emit({"reserve": "reserve", "release": "fail"}[what], listener=listener)
             continue
         conn, side = who[0], who[1]
         pump = (conn, side)
@@ -84,7 +100,7 @@ def steps(lines):
             if conn in plain:
                 # No lock to record: the write took it, and it worked unless
                 # the pump's next step says otherwise.
-                nxt = next((w for who2, w in events[index + 1:]
+                nxt = next((w for who2, w, _ in events[index + 1:]
                             if who2 == who), None)
                 emit("lock", conn, side)
                 emit("unlock_fail" if nxt == "write_fails" else "unlock_ok", conn, side)
@@ -121,7 +137,12 @@ def steps(lines):
             emit("stop", conn, side)
             continue
         raise SystemExit("cannot read: %s %s" % (" ".join(who), what))
+    steps.addresses = sorted(addresses.values(), key=lambda a: int(a[1:]))
     return out
+
+
+steps.public_tls = True
+steps.addresses = []
 
 
 def module(steps_, path):
@@ -129,10 +150,13 @@ def module(steps_, path):
         f.write("---- MODULE ServerRecorded ----\nEXTENDS Naturals\n")
         f.write("\\* Written by tools/servertrace.py from a recorded run.\n")
         f.write("RecordedCap == %d\n" % CAP)
-        f.write("RecordedConns == 1..%d\n" % CAP)
+        f.write("RecordedPerAddress == %d\n" % PER_ADDRESS)
+        f.write("RecordedConns == 1..%d\n" % (2 * CAP))
+        f.write("RecordedAddresses == {%s}\n" % ", ".join('"%s"' % a for a in steps.addresses))
+        f.write("RecordedPublicTls == %s\n" % ("TRUE" if steps.public_tls else "FALSE"))
         f.write("Steps == <<\n")
-        f.write(",\n".join('  [what |-> "%s", c |-> %d, p |-> "%s", l |-> "%s"]'
-                           % (s["what"], s["c"], s["p"], s["l"]) for s in steps_))
+        f.write(",\n".join('  [what |-> "%s", c |-> %d, p |-> "%s", l |-> "%s", k |-> "%s", a |-> "%s"]'
+                           % (s["what"], s["c"], s["p"], s["l"], s["k"], s["a"]) for s in steps_))
         f.write("\n>>\n====\n")
 
 
@@ -189,7 +213,7 @@ def first(lines, test, after=0):
 def tunnel_of(lines):
     """A TLS connection that became a tunnel and sent data, if the record
     has one."""
-    tls = {l.split()[-1] for l in lines if l.startswith("l443 accept ")}
+    tls = {l.split()[2] for l in lines if l.startswith("l443 accept ")}
     sent = {l.split()[0] for l in lines if l.endswith(" down lock")}
     tunnels = [l.split()[0] for l in lines if l.endswith(" up tunnel")]
     return next((c for c in tunnels if c in tls and c in sent), None)
@@ -224,6 +248,12 @@ def broken(lines):
             out.append(("data is sent without the write lock",
                         [l for i, l in enumerate(lines) if not (i > data and l.startswith(c + " down ") and
                                                                ("lock" in l))]))
+    away = first(lines, lambda l: " turn_away public " in l)
+    if away is not None:
+        out.append(("a connection is turned away and keeps its slot", lines[:away] + lines[away + 1:]))
+        out.append(("an allowlisted peer is turned away while its pool has room",
+                    lines[:away] + [lines[away].replace(" turn_away public ", " turn_away allowed ")]
+                    + lines[away + 1:]))
     return out
 
 

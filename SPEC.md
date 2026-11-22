@@ -61,6 +61,11 @@ per-site log files, config reload, HTTP/2.
    alert.
 7. **Post-quantum hybrid key exchange**: X25519MLKEM768 is preferred
    whenever the client offers a share for it.
+8. **Connections beyond a pool's room are closed at once**, not queued: 512
+   from inside the allowlists, 512 from everyone else, 64 from one
+   address outside them. nginx queues connections beyond its
+   `worker_connections` and has no per-address limit unless `limit_conn` is
+   set.
 
 ## 3. Configuration
 
@@ -160,12 +165,21 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
   us reading from it. After a failed write nothing more is sent.
 - A thread that stops shuts down both sockets, which is what stops the
   other one. Every blocking read and write has a timeout.
-- A global connection cap (512), lowered at startup if the open-file limit
-  cannot hold it: a connection holds up to two descriptors, and 16 are kept
-  for the rest (so 512 needs a limit of 1040; the unit sets 4096). The
-  accept loop waits for a free slot before calling `accept`, so overload
-  backs up into the kernel queue. Slots are released by an RAII guard on
-  every exit path, including panics.
+- Two pools of connection slots, 512 each: one for peers inside some site's
+  allowlist, one for everyone else, where one address (IPv4, or an IPv6
+  /64) may hold at most 64. A flood from outside the allowlists, however
+  many addresses it comes from, cannot take the slots of the sites behind
+  them. Over TLS, when every site with a certificate has an allowlist, a
+  peer outside all of them is turned away at once.
+- The accept loop takes a slot before calling `accept`, so when both pools
+  are full overload backs up into the kernel queue. Once the connection has
+  come, its slot is from its pool; if the pool, or the peer's address, has
+  no room, the connection is closed at once (turned away), and the log
+  says how many were, at most once a minute. Slots are released by an RAII
+  guard on every exit path, including panics.
+- The pools are lowered at startup if the open-file limit cannot hold them:
+  a connection holds up to two descriptors, and 16 are kept for the rest
+  (so two pools of 512 need a limit of 2064; the unit sets 4096).
 - `/dev/urandom` is opened once, at startup, and kept open.
 - A watcher thread reads the certificate and key files again every minute
   (section 5).
@@ -185,7 +199,8 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
 
 | Limit | Value |
 |---|---|
-| Concurrent connections | 512 |
+| Concurrent connections | 512 from inside some allowlist, 512 from everyone else |
+| Connections from one address outside every allowlist (IPv4, IPv6 /64) | 64 |
 | TLS handshake deadline | 10 s |
 | Request head size / header count | 16 KB / 100 |
 | Request head read timeout | 60 s |
@@ -625,10 +640,13 @@ functions, with the facts that hold of them for every input:
   it may keep the connection only if it allowed that and the response is
   delimited; a tunnel opens only on a 101 that answers an allowed upgrade.
 
-**`Server.tla`** — accept loops, the connection cap and the two threads of a
-tunnel.
-- Connections never exceed the cap; every slot belongs to exactly one accept
-  loop or connection, on every path including panic.
+**`Server.tla`** — accept loops, the two pools of slots and the two threads
+of a tunnel.
+- Neither pool ever holds more than its cap, nor one address more than its
+  share of the public pool; every slot belongs to exactly one accept loop
+  or connection, and a connection's to exactly one pool, on every path
+  including panic. (Checked with pools of 2, one connection per address,
+  three connections and one tunnel at a time.)
 - No tunnel thread outlives its connection; two threads never write to the
   client at once; copying from the client never waits for the write lock.
 - Once either tunnel thread's read ends, the whole tunnel ends and the slot
@@ -872,8 +890,13 @@ port 80 is reachable by the ACME server.
   crate fail the build, but a build cannot happen while crates.io (or a
   mirror of it) is unreachable, and the crates' build scripts run on the
   machine that builds, as for any Rust project.
-- **Thread-per-connection** means 512 slow clients can exhaust the cap on a
-  host without an allowlist. nginx has the same weakness at a higher number.
+- **Thread-per-connection** means slow clients from 8 or more addresses
+  (512 at 64 each) can fill the public pool, so sites without an allowlist
+  stop answering while they hold it; sites behind an allowlist keep their
+  own pool. nginx has the same weakness at a higher number.
+- **A full pool turns connections away** rather than queueing them, so a
+  burst of more than 512 allowlisted connections at once (from a CDN, say)
+  sees the rest closed.
 - **Old clients** without TLS 1.3, ChaCha20-Poly1305 or X25519 cannot connect.
   RFC 8446 makes AES-128-GCM and secp256r1 mandatory to implement, so a
   client that offers only those is within its rights. Browsers, curl,

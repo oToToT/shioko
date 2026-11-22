@@ -3,37 +3,70 @@
 
 reach Full
 reach Contended
+reach OnePoolFull
 
 # An accept loop takes a slot even when none is left.
 break cap-ignored
-expect invariant CapRespected
--    /\ used < Cap
+expect invariant ReservationsBounded
+-    /\ used < 2 * Cap
 +    /\ TRUE
+
+# A connection is let into a pool that is full.
+break pool-room-ignored
+expect invariant CapRespected
+-    /\ Cardinality(InPool(k)) < Cap
++    /\ TRUE
+
+# One address may hold any number of public connections.
+break address-room-ignored
+expect invariant PerAddressRespected
+-    /\ k = "public" => Cardinality(FromAddress(a)) < PerAddress
++    /\ TRUE
+
+# A connection that is turned away keeps its slot.
+break turned-away-keeps-slot
+expect invariant SlotsAccounted
+-    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls)
+-    /\ accept' = [accept EXCEPT ![l] = "wait"]
+-    /\ used' = used - 1
++    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls)
++    /\ accept' = [accept EXCEPT ![l] = "wait"]
++    /\ used' = used
+
+# A connection that ends keeps its place in its pool.
+break pool-kept
+expect invariant PoolsAccounted
+-    /\ pool' = [pool EXCEPT ![c] = "none"]
++    /\ pool' = pool
 
 # A failed accept() keeps its slot.
 break slot-lost
 expect invariant SlotsAccounted
+-AcceptFails(l) ==
+-    /\ accept[l] = "ready"
 -    /\ accept' = [accept EXCEPT ![l] = "wait"]
 -    /\ used' = used - 1
++AcceptFails(l) ==
++    /\ accept[l] = "ready"
 +    /\ accept' = [accept EXCEPT ![l] = "wait"]
 +    /\ used' = used
 
 # A connection gives its slot back twice.
 break slot-returned-twice
 expect invariant SlotsAccounted
--    /\ conn' = [conn EXCEPT ![c] = "free"]
+-    /\ from' = [from EXCEPT ![c] = "none"]
 -    /\ used' = used - 1
-+    /\ conn' = [conn EXCEPT ![c] = "free"]
++    /\ from' = [from EXCEPT ![c] = "none"]
 +    /\ used' = used - 2
 
 # The connection's thread does not wait for the second thread.
 break no-join
 expect invariant NoStrayThread
 -    /\ \A p \in Sides : At(c, p, "done")
--    /\ conn' = [conn EXCEPT ![c] = "free"]
+-    /\ Leave(c)
 -    /\ pump' = [pump EXCEPT ![c] = [p \in Sides |-> "off"]]
 +    /\ At(c, "up", "done")
-+    /\ conn' = [conn EXCEPT ![c] = "free"]
++    /\ Leave(c)
 +    /\ pump' = [pump EXCEPT ![c]["up"] = "off"]
 
 # A stopping pump does not shut the sockets down.
@@ -54,11 +87,11 @@ expect property LockGranted
 -            /\ WF_vars(Written(c, p) \/ WriteFails(c, p))
 +            /\ TRUE
 
-# A failed write keeps the write lock. Tunnels that can never end pile up
-# until the whole server is stuck.
+# A failed write keeps the write lock, so the tunnel can never end. (With
+# one tunnel at a time in the model, they cannot pile up until the server
+# is stuck, as they would in the real one.)
 break lock-kept
 expect invariant OneWriter
-expect deadlock
 -    /\ lock' = [lock EXCEPT ![c] = "free"]
 -    /\ Move(c, p, "stop")
 +    /\ UNCHANGED lock

@@ -81,12 +81,14 @@ fn main() -> ExitCode {
     let cap = server::cap_for(&std::fs::read_to_string("/proc/self/limits").unwrap_or_default());
     if cap < server::CONNECTIONS {
         log.error(&format!(
-            "the open-file limit leaves room for {cap} connections, not {}: raise it to {} (LimitNOFILE=, ulimit -n)",
+            "the open-file limit leaves room for {cap} connections in each pool, not {}: raise it to {} (LimitNOFILE=, ulimit -n)",
             server::CONNECTIONS,
-            2 * server::CONNECTIONS + server::RESERVED_FILES
+            server::FILES_NEEDED
         ));
     }
-    let server = server::Server::new(config, identities, PathBuf::from(ACME_DIRECTORY), Box::new(log), cap);
+    let server = server::Server::new(
+        config, identities, PathBuf::from(ACME_DIRECTORY), Box::new(log), cap, server::PER_ADDRESS,
+    );
     let watched = std::sync::Arc::clone(&server);
     if std::thread::Builder::new().spawn(move || server::watch(&watched)).is_err() {
         eprintln!("cannot start the certificate watcher");

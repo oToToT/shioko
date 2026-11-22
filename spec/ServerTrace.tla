@@ -24,17 +24,18 @@ VARIABLE i  \* the next step
 TraceData(c, p) ==
     /\ p = "down" /\ At(c, p, "read")
     /\ Move(c, p, "lock")
-    /\ UNCHANGED <<used, accept, conn, lock, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut>>
 
 TraceWritten(c, p) ==
     /\ Writing(c, p)
     /\ lock' = [lock EXCEPT ![c] = "free"]
     /\ Move(c, p, IF At(c, p, "write") THEN "read" ELSE "stop")
-    /\ UNCHANGED <<used, accept, conn, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, shut>>
 
 Take(s) ==
     CASE s.what = "reserve"     -> Reserve(s.l)
-      [] s.what = "accept"      -> Accept(s.l, s.c)
+      [] s.what = "accept"      -> Accept(s.l, s.c, s.k, s.a)
+      [] s.what = "turn_away"   -> TurnAway(s.l, s.k, s.a)
       [] s.what = "fail"        -> AcceptFails(s.l)
       [] s.what = "release"     -> Finish(s.c) \/ EndTunnel(s.c)
       [] s.what = "tunnel"      -> StartTunnel(s.c)

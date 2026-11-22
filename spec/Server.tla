@@ -7,6 +7,13 @@
 (* connection and hands both to a new thread. That thread serves the       *)
 (* connection and gives the slot back when it ends, however it ends.       *)
 (*                                                                         *)
+(* Connections come out of two pools of Cap slots each: one for peers      *)
+(* inside some site's allowlist, one for everyone else, so that no flood   *)
+(* from outside the allowlists can take the slots of the sites behind      *)
+(* them. In the public pool one address may hold at most PerAddress        *)
+(* connections. A connection whose pool, or address, has no room is       *)
+(* turned away at once: closed, and its slot given back.                   *)
+(*                                                                         *)
 (* A connection that becomes a tunnel (WebSocket) needs two threads, one   *)
 (* per direction, called pumps here. The "up" pump is the connection's own *)
 (* thread and copies client to upstream. The "down" pump is a second       *)
@@ -29,11 +36,20 @@
 EXTENDS Integers, FiniteSets
 
 CONSTANTS
-    Cap,        \* most connections served at once
+    Cap,        \* most connections served at once from each pool
+    PerAddress, \* most connections at once from one address, public pool
     Listeners,  \* the accept loops
-    Conns       \* names for connections, reused once one has ended
+    Secure,     \* the listeners that speak TLS
+    PublicTls,  \* some TLS site serves peers outside every allowlist
+    Conns,      \* names for connections, reused once one has ended
+    Addresses   \* where connections come from
 
-ASSUME Cap \in Nat /\ Cardinality(Conns) >= Cap
+ASSUME /\ Cap \in Nat /\ PerAddress \in Nat /\ Secure \subseteq Listeners
+       /\ PublicTls \in BOOLEAN /\ Cardinality(Conns) >= Cap
+
+\* allowed  the peer is inside some site's allowlist
+\* public   everyone else
+Pools == {"allowed", "public"}
 
 VARIABLES
     used,     \* slots taken
@@ -41,6 +57,9 @@ VARIABLES
               \* blocked in accept()
     conn,     \* per connection: "free", "serve" (TLS handshake and HTTP),
               \* or "tunnel"
+    pool,     \* per connection: the pool its slot is from, or "none"
+    from,     \* per connection in the public pool: the address it came
+              \* from, which the pool counts; "none" otherwise
     pump,     \* per connection and direction, where the pump is:
               \*   off        no tunnel
               \*   read       blocked reading its source
@@ -53,7 +72,7 @@ VARIABLES
     lock,     \* per connection: who holds the write lock, or "free"
     shut      \* per connection: the sockets have been shut down
 
-vars == <<used, accept, conn, pump, lock, shut>>
+vars == <<used, accept, conn, pool, from, pump, lock, shut>>
 
 Sides == {"up", "down"}
 
@@ -61,6 +80,8 @@ Init ==
     /\ used = 0
     /\ accept = [l \in Listeners |-> "wait"]
     /\ conn = [c \in Conns |-> "free"]
+    /\ pool = [c \in Conns |-> "none"]
+    /\ from = [c \in Conns |-> "none"]
     /\ pump = [c \in Conns |-> [p \in Sides |-> "off"]]
     /\ lock = [c \in Conns |-> "free"]
     /\ shut = [c \in Conns |-> FALSE]
@@ -70,35 +91,65 @@ Init ==
 (***************************************************************************)
 
 \* An accept loop takes a slot before it accepts, so that when the server
-\* is full new connections wait in the kernel's queue.
+\* is full new connections wait in the kernel's queue. Which pool the slot
+\* is from is known only once the connection has come.
 Reserve(l) ==
     /\ accept[l] = "wait"
-    /\ used < Cap
+    /\ used < 2 * Cap
     /\ used' = used + 1
     /\ accept' = [accept EXCEPT ![l] = "ready"]
-    /\ UNCHANGED <<conn, pump, lock, shut>>
+    /\ UNCHANGED <<conn, pool, from, pump, lock, shut>>
 
-\* A connection arrives; the slot goes to the thread that serves it.
-Accept(l, c) ==
+Live == {c \in Conns : conn[c] # "free"}
+InPool(k) == {c \in Live : pool[c] = k}
+FromAddress(a) == {c \in InPool("public") : from[c] = a}
+
+\* Pool k has a slot free for a connection from a.
+Room(k, a) ==
+    /\ Cardinality(InPool(k)) < Cap
+    /\ k = "public" => Cardinality(FromAddress(a)) < PerAddress
+
+\* A connection arrives from a, which puts it in pool k; the slot goes to
+\* the thread that serves it.
+Accept(l, c, k, a) ==
     /\ accept[l] = "ready"
     /\ conn[c] = "free"
+    /\ Room(k, a)
     /\ accept' = [accept EXCEPT ![l] = "wait"]
     /\ conn' = [conn EXCEPT ![c] = "serve"]
+    /\ pool' = [pool EXCEPT ![c] = k]
+    /\ from' = [from EXCEPT ![c] = IF k = "public" THEN a ELSE "none"]
     /\ UNCHANGED <<used, pump, lock, shut>>
+
+\* A connection arrives that is turned away: its pool or address has no
+\* room, or it comes over TLS from outside every allowlist when every TLS
+\* site has one. It is closed at once and the slot is given back.
+TurnAway(l, k, a) ==
+    /\ accept[l] = "ready"
+    /\ ~Room(k, a) \/ (k = "public" /\ l \in Secure /\ ~PublicTls)
+    /\ accept' = [accept EXCEPT ![l] = "wait"]
+    /\ used' = used - 1
+    /\ UNCHANGED <<conn, pool, from, pump, lock, shut>>
 
 \* accept() fails, or the thread cannot be started: the slot is given back.
 AcceptFails(l) ==
     /\ accept[l] = "ready"
     /\ accept' = [accept EXCEPT ![l] = "wait"]
     /\ used' = used - 1
-    /\ UNCHANGED <<conn, pump, lock, shut>>
+    /\ UNCHANGED <<conn, pool, from, pump, lock, shut>>
+
+\* The connection's slot goes back to its pool.
+Leave(c) ==
+    /\ conn' = [conn EXCEPT ![c] = "free"]
+    /\ pool' = [pool EXCEPT ![c] = "none"]
+    /\ from' = [from EXCEPT ![c] = "none"]
+    /\ used' = used - 1
 
 \* A connection that is not a tunnel ends: normally, on an error, or by a
 \* panic. The slot is given back in every case.
 Finish(c) ==
     /\ conn[c] = "serve"
-    /\ conn' = [conn EXCEPT ![c] = "free"]
-    /\ used' = used - 1
+    /\ Leave(c)
     /\ UNCHANGED <<accept, pump, lock, shut>>
 
 (***************************************************************************)
@@ -110,7 +161,7 @@ StartTunnel(c) ==
     /\ conn[c] = "serve"
     /\ conn' = [conn EXCEPT ![c] = "tunnel"]
     /\ pump' = [pump EXCEPT ![c] = [p \in Sides |-> "read"]]
-    /\ UNCHANGED <<used, accept, lock, shut>>
+    /\ UNCHANGED <<used, accept, pool, from, lock, shut>>
 
 At(c, p, where) == pump[c][p] = where
 Move(c, p, where) == pump' = [pump EXCEPT ![c][p] = where]
@@ -125,21 +176,21 @@ Data(c, p) ==
     /\ At(c, p, "read")
     /\ ~shut[c]
     /\ Move(c, p, "lock")
-    /\ UNCHANGED <<used, accept, conn, lock, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut>>
 
 \* A read ends: end of stream, error, idle timeout, sockets shut down, or
 \* the pump panics. The pump may have an alert to send before it stops.
 ReadEnds(c, p) ==
     /\ At(c, p, "read")
     /\ Move(c, p, "bye_lock") \/ Move(c, p, "stop")
-    /\ UNCHANGED <<used, accept, conn, lock, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut>>
 
 TakeLock(c, p) ==
     /\ Waiting(c, p)
     /\ lock[c] = "free"
     /\ lock' = [lock EXCEPT ![c] = p]
     /\ Move(c, p, IF At(c, p, "lock") THEN "write" ELSE "bye_write")
-    /\ UNCHANGED <<used, accept, conn, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, shut>>
 
 \* The client took the bytes.
 Written(c, p) ==
@@ -147,7 +198,7 @@ Written(c, p) ==
     /\ ~shut[c]
     /\ lock' = [lock EXCEPT ![c] = "free"]
     /\ Move(c, p, IF At(c, p, "write") THEN "read" ELSE "stop")
-    /\ UNCHANGED <<used, accept, conn, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, shut>>
 
 \* A write fails: error, write timeout, sockets shut down, or the pump
 \* panics. The lock is released in every case.
@@ -155,7 +206,7 @@ WriteFails(c, p) ==
     /\ Writing(c, p)
     /\ lock' = [lock EXCEPT ![c] = "free"]
     /\ Move(c, p, "stop")
-    /\ UNCHANGED <<used, accept, conn, shut>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, shut>>
 
 \* A stopping pump shuts down both sockets, also when it is unwinding from
 \* a panic.
@@ -163,21 +214,23 @@ Stop(c, p) ==
     /\ At(c, p, "stop")
     /\ shut' = [shut EXCEPT ![c] = TRUE]
     /\ Move(c, p, "done")
-    /\ UNCHANGED <<used, accept, conn, lock>>
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock>>
 
 \* The connection's thread waits for the second thread, then ends and
 \* gives the slot back.
 EndTunnel(c) ==
     /\ conn[c] = "tunnel"
     /\ \A p \in Sides : At(c, p, "done")
-    /\ conn' = [conn EXCEPT ![c] = "free"]
+    /\ Leave(c)
     /\ pump' = [pump EXCEPT ![c] = [p \in Sides |-> "off"]]
     /\ shut' = [shut EXCEPT ![c] = FALSE]
-    /\ used' = used - 1
     /\ UNCHANGED <<accept, lock>>
 
 Next ==
-    \/ \E l \in Listeners : Reserve(l) \/ AcceptFails(l) \/ \E c \in Conns : Accept(l, c)
+    \/ \E l \in Listeners :
+        \/ Reserve(l) \/ AcceptFails(l)
+        \/ \E k \in Pools, a \in Addresses :
+            TurnAway(l, k, a) \/ \E c \in Conns : Accept(l, c, k, a)
     \/ \E c \in Conns : Finish(c) \/ StartTunnel(c) \/ EndTunnel(c)
     \/ \E c \in Conns, p \in Sides :
         \/ Data(c, p) \/ ReadEnds(c, p) \/ TakeLock(c, p)
@@ -208,19 +261,28 @@ TypeOK ==
     /\ used \in Nat
     /\ accept \in [Listeners -> {"wait", "ready"}]
     /\ conn \in [Conns -> {"free", "serve", "tunnel"}]
+    /\ pool \in [Conns -> Pools \cup {"none"}]
+    /\ from \in [Conns -> Addresses \cup {"none"}]
     /\ pump \in [Conns -> [Sides -> PumpStates]]
     /\ lock \in [Conns -> Sides \cup {"free"}]
     /\ shut \in [Conns -> BOOLEAN]
 
-Live == {c \in Conns : conn[c] # "free"}
-
-\* Never more connections than the cap.
-CapRespected == Cardinality(Live) <= Cap
+\* Never more connections in a pool than its cap, nor from one address in
+\* the public pool than PerAddress; never more slots taken than the two
+\* pools hold.
+CapRespected == \A k \in Pools : Cardinality(InPool(k)) <= Cap
+PerAddressRespected == \A a \in Addresses : Cardinality(FromAddress(a)) <= PerAddress
+ReservationsBounded == used <= 2 * Cap
 
 \* Every slot taken belongs to exactly one accept loop or connection, so
-\* none is lost and none is given back twice.
+\* none is lost and none is given back twice; a connection's slot is from
+\* a pool exactly while it lives.
 SlotsAccounted ==
     used = Cardinality({l \in Listeners : accept[l] = "ready"}) + Cardinality(Live)
+PoolsAccounted ==
+    \A c \in Conns :
+        /\ (conn[c] # "free") = (pool[c] # "none")
+        /\ (conn[c] # "free" /\ pool[c] = "public") = (from[c] # "none")
 
 \* No pump thread outlives its connection.
 NoStrayThread ==
@@ -248,12 +310,27 @@ TunnelEnds ==
 LockGranted ==
     \A c \in Conns, p \in Sides : Waiting(c, p) ~> ~Waiting(c, p)
 
-\* Not a property. tools/spec.sh confirms the model gets this far: the
-\* server is full of tunnels and an accept loop is waiting for a slot.
+\* Keeps the model small: one tunnel at a time. A tunnel's threads, lock
+\* and sockets are its own, and which pool a slot is from does not depend
+\* on how many connections are tunnels.
+OneTunnel == Cardinality({c \in Conns : conn[c] = "tunnel"}) <= 1
+
+\* Not a property. tools/spec.sh confirms the model gets this far: every
+\* slot is taken, by every connection there can be (one of them a tunnel,
+\* a pool full) and an accept loop, and the other accept loop waits.
 Full ==
-    /\ used = Cap
-    /\ Cardinality({c \in Conns : conn[c] = "tunnel"}) = Cap
+    /\ used = 2 * Cap
+    /\ Live = Conns
+    /\ \E k \in Pools : Cardinality(InPool(k)) = Cap
+    /\ \E c \in Conns : conn[c] = "tunnel"
     /\ \E l \in Listeners : accept[l] = "wait"
+
+\* Not a property. A connection is turned away while the other pool has
+\* room: one pool is full and the other is not.
+OnePoolFull ==
+    /\ Cardinality(InPool("public")) = Cap
+    /\ Cardinality(InPool("allowed")) < Cap
+    /\ \E l \in Listeners : accept[l] = "ready"
 
 \* Not a property. One pump waits for the lock while the other holds it.
 Contended ==
