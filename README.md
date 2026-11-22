@@ -149,6 +149,16 @@ an idle keep-alive connection. A name that only needs a
 certificate, a mail server's for instance, needs no section. An unknown
 hostname gets a 404 or, over TLS, an `unrecognized_name` alert.
 
+**Keep the ACME directory writable by root only.** shioko serves any file
+of up to 4 KB in `/var/lib/shioko/acme/.well-known/acme-challenge/` whose
+name looks like a token, and it follows symbolic links. With certbot
+running as root, as the deployment guide sets it up, only root can write
+there, and root can read the keys anyway, so this changes nothing. It
+matters if you run the ACME client as another user (acme.sh, lego, a
+container) and let it write to that directory: that user could put there
+a link to any site's private key, which shioko can read, and fetch the key
+over plain HTTP.
+
 More examples, and every detail of the behaviour, are in
 [`SPEC.md`](SPEC.md): section 3 for the configuration, 5 for TLS, 6 for
 HTTP.
