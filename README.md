@@ -102,7 +102,15 @@ tools/spec.sh          # model-check the specs, check the RFC lists
 tools/prove.sh         # Kani proofs
 tools/interop.sh       # a real shioko against OpenSSL and curl
 tools/ci.sh            # all of the above in Linux containers, and tlsfuzzer
+tools/ci.sh STAGE...   # some of it: specs proofs interop unit tlsfuzzer
+                       # linux/amd64 linux/arm64
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) verifies every push to `main` and
+every pull request. Each stage of `tools/ci.sh` is a job of its own, with
+arm64 on an arm64 runner, and the end-to-end environment below runs twice:
+`tools/e2e.sh` and `tools/e2e.sh record`. Their results are kept as artifacts
+of the run.
 
 `tools/e2e.sh [soak MINUTES]` runs the end-to-end environment of `ci/e2e/`
 (needs Docker and network to pull images): shioko as deployed, nginx for

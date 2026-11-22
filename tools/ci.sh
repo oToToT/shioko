@@ -1,34 +1,48 @@
 #!/bin/sh
 # Runs every check in Linux containers: the TLA+ specs, the Kani proofs, the
-# interop checks and tlsfuzzer with its recorded runs checked by TLC once,
-# then tools/check.sh for each architecture we deploy to.
+# interop checks, the systemd unit, and tlsfuzzer with its recorded runs
+# checked by TLC once, then tools/check.sh for each architecture we deploy
+# to. .github/workflows/ci.yml runs each stage as a job of its own.
 #
-#   tools/ci.sh                 specs, proofs, then amd64 and arm64
-#   tools/ci.sh linux/arm64     specs, proofs, then one architecture
+#   tools/ci.sh             every stage
+#   tools/ci.sh STAGE...    only those, of: specs proofs interop unit
+#                           tlsfuzzer linux/amd64 linux/arm64
 #
 # Only the image setup steps use the network; the checks run without it.
 set -eu
 cd "$(dirname "$0")/.."
+stages=${*:-specs proofs interop unit tlsfuzzer linux/amd64 linux/arm64}
 
-echo "==== specs"
-docker build --file ci/spec.Dockerfile --progress plain --tag shioko-ci:spec .
+build() { # DOCKERFILE TAG [docker build options]
+    file=$1 tag=$2
+    shift 2
+    docker build "$@" --file "ci/$file" --progress plain --tag "shioko-ci:$tag" .
+}
 
-echo "==== proofs"
-docker build --file ci/kani.Dockerfile --progress plain --tag shioko-ci:kani .
-
-echo "==== interop with OpenSSL and curl"
-docker build --file ci/interop.Dockerfile --progress plain --tag shioko-ci:interop .
-
-echo "==== the systemd unit"
-docker build --file ci/unit.Dockerfile --progress plain --tag shioko-ci:unit .
-
-echo "==== tlsfuzzer, and its recorded runs checked by TLC"
-docker build --file ci/tlsfuzzer.Dockerfile --progress plain --tag shioko-ci:tlsfuzzer .
-
-for platform in ${*:-linux/amd64 linux/arm64}; do
-    echo "==== $platform"
-    docker build --platform "$platform" --file ci/Dockerfile --progress plain \
-        --tag "shioko-ci:$(basename "$platform")" .
+for stage in $stages; do
+    case $stage in
+    specs)
+        echo "==== specs"
+        build spec.Dockerfile spec ;;
+    proofs)
+        echo "==== proofs"
+        build kani.Dockerfile kani ;;
+    interop)
+        echo "==== interop with OpenSSL and curl"
+        build interop.Dockerfile interop ;;
+    unit)
+        echo "==== the systemd unit"
+        build unit.Dockerfile unit ;;
+    tlsfuzzer)
+        echo "==== tlsfuzzer, and its recorded runs checked by TLC"
+        build tlsfuzzer.Dockerfile tlsfuzzer ;;
+    linux/amd64 | linux/arm64)
+        echo "==== $stage"
+        build Dockerfile "${stage#linux/}" --platform "$stage" ;;
+    *)
+        echo "unknown stage: $stage" >&2
+        exit 2 ;;
+    esac
 done
 
-echo "==== CI passed: specs proofs interop unit tlsfuzzer ${*:-linux/amd64 linux/arm64}"
+echo "==== CI passed: $stages"
