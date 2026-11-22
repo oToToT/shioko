@@ -162,11 +162,12 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
   waits for it before giving its slot back.
 - In a tunnel both threads share the TLS connection. Writing has a lock;
   reading never waits for it, so a client that is slow to read cannot stop
-  us reading from it. A step of the TLS state machine that has us send
-  something (an answer to a KeyUpdate or to the client's close_notify, an
-  alert) is taken with the lock held, so no other thread can find the
-  connection closed and shut it down before what is due has gone out.
-  After a failed write nothing more is sent.
+  us reading from it, except to answer a KeyUpdate that client asked for.
+  A step of the TLS state machine that has us send something (that answer,
+  our close_notify in reply to the client's, an alert) is taken with the
+  lock held, so no other thread can find the connection closed and shut it
+  down before what is due has gone out. After a failed write nothing more
+  is sent.
 - The first thread to stop shuts down both sockets, which is what stops
   the other one; the other then leaves them as they are, since a second
   shutdown at the same moment would cut the first one's close_notify.
@@ -688,7 +689,8 @@ of a tunnel.
   including panic. (Checked with pools of 2, one connection per address,
   three connections and one tunnel at a time.)
 - No tunnel thread outlives its connection; two threads never write to the
-  client at once; copying from the client never waits for the write lock.
+  client at once; copying from the client never waits for the write lock,
+  only answering a KeyUpdate that client asked for does.
 - Once either tunnel thread's read ends, the whole tunnel ends and the slot
   is free; a thread waiting for the write lock does not wait for ever.
 - Once the server is stopping nobody is let in, and the stop always ends

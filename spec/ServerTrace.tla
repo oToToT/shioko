@@ -10,12 +10,12 @@
 (* stray thread, one writer, reading never waiting for the write lock. A   *)
 (* step the spec does not allow where it comes stops the run there.        *)
 (*                                                                         *)
-(* One allowance: in the spec a pump cannot read data, or finish a write,  *)
-(* once the other pump has shut the sockets down. A read or write that     *)
-(* returned just before the other thread's shutdown may still be recorded  *)
-(* just after it, since the two threads write their lines without a lock   *)
-(* in common. So here those two steps do not look at `shut`. No invariant  *)
-(* depends on it.                                                          *)
+(* One allowance: in the spec a pump cannot read data or a KeyUpdate, or   *)
+(* finish a write, once the other pump has shut the sockets down. A read   *)
+(* or write that returned just before the other thread's shutdown may     *)
+(* still be recorded just after it, since the two threads write their     *)
+(* lines without a lock in common. So here those three steps do not look  *)
+(* at `shut`. No invariant depends on it.                                  *)
 (***************************************************************************)
 EXTENDS Server, ServerRecorded, Sequences, TLC
 
@@ -26,10 +26,15 @@ TraceData(c, p) ==
     /\ Move(c, p, "lock")
     /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut, stop>>
 
+TraceAnswer(c, p) ==
+    /\ p = "up" /\ At(c, p, "read")
+    /\ Move(c, p, "answer_lock")
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut, stop>>
+
 TraceWritten(c, p) ==
     /\ Writing(c, p)
     /\ lock' = [lock EXCEPT ![c] = "free"]
-    /\ Move(c, p, IF At(c, p, "write") THEN "read" ELSE "stop")
+    /\ Move(c, p, IF At(c, p, "bye_write") THEN "stop" ELSE "read")
     /\ UNCHANGED <<used, accept, conn, pool, from, shut, stop>>
 
 Take(s) ==
@@ -40,6 +45,7 @@ Take(s) ==
       [] s.what = "release"     -> Finish(s.c) \/ EndTunnel(s.c)
       [] s.what = "tunnel"      -> StartTunnel(s.c)
       [] s.what = "data"        -> TraceData(s.c, s.p)
+      [] s.what = "answer"      -> TraceAnswer(s.c, s.p)
       [] s.what = "read_ends"   -> ReadEnds(s.c, s.p)
       [] s.what = "lock"        -> TakeLock(s.c, s.p)
       [] s.what = "unlock_ok"   -> TraceWritten(s.c, s.p)

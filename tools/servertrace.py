@@ -26,6 +26,11 @@ What the log says is turned into the spec's steps as follows:
   the spec its read ends first, and that is the order given here. Moving
   the end of a read earlier is safe: it touches nothing another thread
   sees.
+- the up pump taking the lock and then reading on (it copies data, or
+  takes the lock again) is answering the client's KeyUpdate: the step
+  Answer. Taking it and then ending is a goodbye, as above; a KeyUpdate
+  answered just before the client's end of stream reads the same way, and
+  both are steps the spec allows.
 - connections get the names 1, 2, ... of the spec, reused once one ends,
   and addresses the names a1, a2, ...
 """
@@ -59,6 +64,12 @@ def steps(lines):
 
     def address(text):
         return addresses.setdefault(text, "a%d" % (len(addresses) + 1))
+
+    def goes_on(index, who):
+        """Whether the pump of events[index] reads on after the unlock that
+        follows: it copies data or takes the lock again."""
+        after = [w for who2, w, _ in events[index + 1:] if who2 == who]
+        return len(after) > 1 and after[1] in ("data", "lock")
 
     def emit(what, conn=None, side=None, listener=None, pool="none", where="none"):
         out.append(dict(what=what, c=names.get(conn, 0), p=side or "",
@@ -118,9 +129,14 @@ def steps(lines):
                 continue  # the lock steps were recorded, or synthesised
         if what == "lock":
             if state.get(pump, "read") == "read":
-                # A goodbye: the read has ended.
-                emit("read_ends", conn, side)
-                state[pump] = "ended"
+                if side == "up" and goes_on(index, who):
+                    # Our answer to the client's KeyUpdate; it reads on.
+                    emit("answer", conn, side)
+                    state[pump] = "wrote"
+                else:
+                    # A goodbye: the read has ended.
+                    emit("read_ends", conn, side)
+                    state[pump] = "ended"
             emit("lock", conn, side)
             continue
         if what in ("unlock_ok", "unlock_fail"):
@@ -129,7 +145,8 @@ def steps(lines):
                 state[pump] = "read" if what == "unlock_ok" else "failed"
             continue
         if what == "read_ends":
-            if state.get(pump) != "ended":
+            # After a failed write the pump has stopped already.
+            if state.get(pump) not in ("ended", "failed"):
                 emit("read_ends", conn, side)
                 state[pump] = "ended"
             continue
@@ -257,11 +274,28 @@ def broken(lines):
     return out
 
 
+def allowed(lines):
+    """[(what, the record as a correct server could have made it)], which
+    must be accepted: our answer to a KeyUpdate in the middle of a tunnel,
+    which the clients of the end-to-end run do not ask for."""
+    c = tunnel_of(lines)
+    unlock = first(lines, lambda l: l == "%s down unlock_ok" % c) if c else None
+    data = first(lines, lambda l: l == "%s up data" % c, unlock or 0) if unlock is not None else None
+    if data is None:
+        return []
+    answer = [c + " up lock", c + " up unlock_ok"]
+    return [("the up pump answers a KeyUpdate in the middle of a tunnel", lines[:unlock + 1] + answer + lines[unlock + 1:])]
+
+
 def selftest(record):
     lines = open(record).read().splitlines()
     if not check(record, lines, quiet=True):
         print("selftest: the recorded run itself was rejected")
         return False
+    for what, changed in allowed(lines):
+        if not check(record, changed, quiet=True):
+            print("selftest: TLC rejected a correct server in which " + what)
+            return False
     changes = broken(lines)
     good = len(changes) >= 7
     if not good:
@@ -271,7 +305,8 @@ def selftest(record):
             print("selftest: TLC accepted a server in which " + what)
             good = False
     if good:
-        print("selftest: the recorded run accepted, %d broken ones rejected" % len(changes))
+        print("selftest: the recorded run and %d correct variant accepted, %d broken ones rejected"
+              % (len(allowed(lines)), len(changes)))
     return good
 
 

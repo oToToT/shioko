@@ -32,7 +32,10 @@
 (*                                                                         *)
 (* A pump stops when its read ends (end of stream, error, idle timeout),   *)
 (* when a write fails, or when it panics. In every case it then shuts down *)
-(* both sockets, which is what makes the other pump stop.                  *)
+(* both sockets (unless the other pump has already), which is what makes   *)
+(* the other pump stop. The pump reading the client writes too, through    *)
+(* the same lock: its alert when its read ends, and in the middle of a     *)
+(* tunnel the KeyUpdate the client asks for.                               *)
 (*                                                                         *)
 (* Unlike the other two specs this one has no state machine in the code    *)
 (* to compare with; it records the design that src/main.rs and             *)
@@ -70,6 +73,9 @@ VARIABLES
               \*   read       blocked reading its source
               \*   lock       waiting for the write lock, to write data
               \*   write      holding the write lock, blocked writing data
+              \*   answer_lock   waiting for the write lock, to answer the
+              \*                 client's KeyUpdate
+              \*   answer_write  holding the write lock, blocked writing it
               \*   bye_lock   waiting for the write lock, to write its alert
               \*   bye_write  holding the write lock, blocked writing its alert
               \*   stop       about to shut the sockets down
@@ -180,8 +186,8 @@ StartTunnel(c) ==
 
 At(c, p, where) == pump[c][p] = where
 Move(c, p, where) == pump' = [pump EXCEPT ![c][p] = where]
-Waiting(c, p) == pump[c][p] \in {"lock", "bye_lock"}
-Writing(c, p) == pump[c][p] \in {"write", "bye_write"}
+Waiting(c, p) == pump[c][p] \in {"lock", "answer_lock", "bye_lock"}
+Writing(c, p) == pump[c][p] \in {"write", "answer_write", "bye_write"}
 
 \* Data arrives for the client and "down" has to write it through TLS.
 \* Data from the client goes to the upstream without the write lock, so
@@ -191,6 +197,16 @@ Data(c, p) ==
     /\ At(c, p, "read")
     /\ ~shut[c]
     /\ Move(c, p, "lock")
+    /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut, stop>>
+
+\* The client asks for a KeyUpdate: "up" has to send ours through TLS, and
+\* then reads on. This waits for the write lock, as data from the client
+\* never does; but only because the client asked us to send.
+Answer(c, p) ==
+    /\ p = "up"
+    /\ At(c, p, "read")
+    /\ ~shut[c]
+    /\ Move(c, p, "answer_lock")
     /\ UNCHANGED <<used, accept, conn, pool, from, lock, shut, stop>>
 
 \* A read ends: end of stream, error, idle timeout, sockets shut down, or
@@ -204,7 +220,9 @@ TakeLock(c, p) ==
     /\ Waiting(c, p)
     /\ lock[c] = "free"
     /\ lock' = [lock EXCEPT ![c] = p]
-    /\ Move(c, p, IF At(c, p, "lock") THEN "write" ELSE "bye_write")
+    /\ Move(c, p, CASE At(c, p, "lock") -> "write"
+                    [] At(c, p, "answer_lock") -> "answer_write"
+                    [] OTHER -> "bye_write")
     /\ UNCHANGED <<used, accept, conn, pool, from, shut, stop>>
 
 \* The client took the bytes.
@@ -212,7 +230,7 @@ Written(c, p) ==
     /\ Writing(c, p)
     /\ ~shut[c]
     /\ lock' = [lock EXCEPT ![c] = "free"]
-    /\ Move(c, p, IF At(c, p, "write") THEN "read" ELSE "stop")
+    /\ Move(c, p, IF At(c, p, "bye_write") THEN "stop" ELSE "read")
     /\ UNCHANGED <<used, accept, conn, pool, from, shut, stop>>
 
 \* A write fails: error, write timeout, sockets shut down, or the pump
@@ -282,7 +300,7 @@ Running ==
             TurnAway(l, k, a) \/ \E c \in Conns : Accept(l, c, k, a)
     \/ \E c \in Conns : Finish(c) \/ StartTunnel(c) \/ EndTunnel(c)
     \/ \E c \in Conns, p \in Sides :
-        \/ Data(c, p) \/ ReadEnds(c, p) \/ TakeLock(c, p)
+        \/ Data(c, p) \/ Answer(c, p) \/ ReadEnds(c, p) \/ TakeLock(c, p)
         \/ Written(c, p) \/ WriteFails(c, p) \/ Stop(c, p)
 
 \* Once the process has exited, nothing happens any more.
@@ -312,7 +330,7 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 (* Properties                                                              *)
 (***************************************************************************)
 
-PumpStates == {"off", "read", "lock", "write", "bye_lock", "bye_write", "stop", "done"}
+PumpStates == {"off", "read", "lock", "write", "answer_lock", "answer_write", "bye_lock", "bye_write", "stop", "done"}
 
 TypeOK ==
     /\ used \in Nat
@@ -352,7 +370,9 @@ OneWriter ==
     \A c \in Conns, p \in Sides : Writing(c, p) <=> lock[c] = p
 
 \* Copying from the client never waits for the write lock, so a client
-\* that does not read what we send cannot stop us reading what it sends.
+\* that does not read what we send cannot stop us reading what it sends;
+\* unless it asks for a KeyUpdate, whose answer does wait (answer_lock),
+\* which stalls only the client that asked.
 ReadingNeverWaits ==
     \A c \in Conns : pump[c]["up"] \notin {"lock", "write"}
 
