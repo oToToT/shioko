@@ -625,7 +625,7 @@ Each tool is used where it is strongest:
 | What | Tool | Checks the code itself? |
 |---|---|---|
 | Threads and locks: the TLS write lock, the connection cap, the two tunnel threads | TLA+ (`Handshake.tla`, `Server.tla`), and TLC on recorded runs of the real server | yes, for the runs recorded: every tlsfuzzer connection against `Handshake.tla`, a whole end-to-end run against `Server.tla` |
-| The same threads in the real code: a tunnel's two pumps over one TlsStream (data both ways, a KeyUpdate) | shuttle (`src/interleavings.rs`): the real code with shuttle's locks, run under 600 schedules of each test in CI (PCT, which finds a bug of a few steps with known probability, and random), any number locally; a deadlock is a failure | yes, for the schedules tried |
+| The same threads in the real code: a tunnel's two pumps over one TlsStream (data both ways, a KeyUpdate), and the slots with accept loops and a stop | shuttle (`src/interleavings.rs`): the real code with shuttle's locks, run under 600 schedules of each test in CI (PCT, which finds a bug of a few steps with known probability, and random), any number locally; a deadlock is a failure | yes, for the schedules tried |
 | The two state machines (TLS handshake, HTTP exchange) and the framing rules | TLA+, then the Rust function compared with the spec on every input | yes, on every input |
 | Parsers: request and status lines, fields, sizes, Host | Kani proofs and unit tests | yes, for every input up to a size |
 | Buffers and copying: which bytes go where, where a message ends | tests of the real proxy over scripted streams, every way the reads can fall | yes, for the runs the tests make |

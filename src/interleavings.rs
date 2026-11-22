@@ -10,18 +10,21 @@
 //! schedules come from a seed (SHUTTLE_SEED, 0 by default), so a failure
 //! can be run again; SHUTTLE_ITERATIONS sets how many of each kind.
 //!
-//! The threads are those of a tunnel: two pumps over one TlsStream, which
-//! is also read, written and shut down from both.
+//! The threads are those of a tunnel (two pumps over one TlsStream, which
+//! is also read, written and shut down from both), and those of the slots:
+//! accept loops waiting for room, connections giving theirs back, and a
+//! stop waiting for the last of them.
 
 use crate::config::Config;
 use crate::http::proxy::{self, Connect, Context, Timeouts};
 use crate::log::Log;
+use crate::server::{Reserved, Server};
 use crate::stream::Stream;
-use crate::sync::{Arc, Condvar, Mutex};
+use crate::sync::{Arc, Condvar, Mutex, thread};
 use crate::tls::conn::{Identity, Served, TlsStream};
 use crate::tls::peer::Peer;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -192,5 +195,51 @@ fn a_tunnel_with_a_key_update_both_ways() {
         // The shutdown says close_notify only if the write lock is free.
         assert!(matches!(alert, Some(0) | None), "the server ended with alert {alert:?}");
         assert!(b"up 1up 2".starts_with(&up), "the upstream got {up:?}");
+    });
+}
+
+/// A stop while the slots are full: two connections (one in each pool,
+/// each pool of one), an accept loop waiting for room, and the stop
+/// waiting for the connections to end. When they have, the stop must
+/// return; the accept loop takes the room and then waits in accept for a
+/// connection that does not come, until the stop is over.
+#[test]
+fn bug_a_stop_slept_to_its_deadline_when_an_accept_loop_took_its_wakeup() {
+    every_schedule(|| {
+        let text = "[inside.test]\nupstream = 127.0.0.1:1\nallow = 10.0.0.0/8\n\n[outside.test]\nupstream = 127.0.0.1:2\n";
+        let config = Config::parse(text, &|_| Ok(String::new())).unwrap();
+        let server = Server::new(config, vec![None, None], PathBuf::new(), Box::new(Quiet), 1, 1);
+        let closed = Arc::new((Mutex::new(false), Condvar::new()));
+        let listener = {
+            let (server, closed) = (Arc::clone(&server), Arc::clone(&closed));
+            thread::spawn(move || {
+                let mut connections = Vec::new();
+                for peer in ["10.0.0.1", "192.0.2.1"] {
+                    let peer = peer.parse().unwrap();
+                    let reserved = Reserved::take(&server);
+                    if let Some(slot) = reserved.admit(server.pool_of(peer, false), peer, "") {
+                        connections.push(thread::spawn(move || {
+                            thread::yield_now();
+                            drop(slot);
+                        }));
+                    }
+                }
+                let reserved = Reserved::take(&server);
+                let mut listening = closed.0.lock().unwrap();
+                while !*listening {
+                    listening = closed.1.wait(listening).unwrap();
+                }
+                drop(listening);
+                drop(reserved);
+                for connection in connections {
+                    connection.join().unwrap();
+                }
+            })
+        };
+        assert_eq!(server.drain(Duration::from_secs(3600)), 0);
+        *closed.0.lock().unwrap() = true;
+        closed.1.notify_all();
+        listener.join().unwrap();
+        assert_eq!(server.used(), 0);
     });
 }

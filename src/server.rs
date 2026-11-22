@@ -120,7 +120,10 @@ pub struct Server {
     pub acme: PathBuf,
     pub log: Box<dyn Log + Send>,
     /// Connection slots, the signal that one came back, the cap of each
-    /// pool and of each address in the public pool.
+    /// pool and of each address in the public pool. Both accept loops
+    /// waiting for room and a stop waiting for the last connection wait
+    /// for the signal, so it wakes all of them: woken alone, a waiter of
+    /// the wrong kind would leave the other waiting.
     slots: Mutex<Slots>,
     freed: Condvar,
     cap: usize,
@@ -335,7 +338,7 @@ impl Reserved {
                 slots.turned_away = 0;
                 slots.reported = Some(Instant::now());
             }
-            server.freed.notify_one();
+            server.freed.notify_all();
             return None;
         };
         match pool {
@@ -358,7 +361,7 @@ impl Drop for Reserved {
             let mut slots = server.slots();
             slots.used = slots.used.saturating_sub(1);
             record!("release");
-            server.freed.notify_one();
+            server.freed.notify_all();
         }
     }
 }
@@ -380,7 +383,7 @@ impl Drop for Slot {
             }
         }
         record!("release");
-        self.server.freed.notify_one();
+        self.server.freed.notify_all();
     }
 }
 
