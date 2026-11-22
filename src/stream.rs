@@ -27,13 +27,11 @@ pub fn timed_out(error: &io::Error) -> bool {
 
 impl Stream for TcpStream {
     fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut stream: &TcpStream = self;
-        Read::read(&mut stream, buf)
+        Read::read(&mut &*self, buf)
     }
 
     fn write_all(&self, buf: &[u8]) -> io::Result<()> {
-        let mut stream: &TcpStream = self;
-        Write::write_all(&mut stream, buf)
+        Write::write_all(&mut &*self, buf)
     }
 
     fn set_read_timeout(&self, timeout: Duration) {
@@ -54,11 +52,10 @@ impl Stream for TcpStream {
         Stream::set_read_timeout(self, LINGER);
         let mut scratch = [0u8; 1024];
         let mut left = LINGER_BYTES;
-        while left > 0 {
-            match Stream::read(self, &mut scratch) {
-                Ok(n) if n > 0 => left = left.saturating_sub(n),
-                _ => break,
-            }
+        while left > 0
+            && let Ok(n @ 1..) = Stream::read(self, &mut scratch)
+        {
+            left = left.saturating_sub(n);
         }
         Stream::shutdown(self);
     }
@@ -115,9 +112,7 @@ impl Buffer {
 
     /// Takes everything read and not yet used.
     pub fn take(&mut self) -> Vec<u8> {
-        let rest = self.pending().to_vec();
-        self.consume(rest.len());
-        rest
+        self.take_exactly(self.pending().len()).unwrap_or_default()
     }
 
     /// From now on the reads made by `line` must be done by `deadline`, so
@@ -139,10 +134,7 @@ impl Buffer {
         }
         let old = self.data.len();
         self.data.resize(old.saturating_add(READ_SIZE), 0);
-        let result = match self.data.get_mut(old..) {
-            Some(space) => stream.read(space),
-            None => Ok(0),
-        };
+        let result = stream.read(self.data.get_mut(old..).unwrap_or_default());
         self.data.truncate(old.saturating_add(*result.as_ref().unwrap_or(&0)));
         self.timed_out = result.as_ref().is_err_and(timed_out);
         result
@@ -179,9 +171,7 @@ impl Buffer {
             return stream.read(out);
         }
         let n = self.pending().len().min(out.len());
-        for (to, from) in out.iter_mut().zip(self.pending()) {
-            *to = *from;
-        }
+        out.iter_mut().zip(self.pending()).for_each(|(to, from)| *to = *from);
         self.consume(n);
         Ok(n)
     }
@@ -192,9 +182,7 @@ impl Buffer {
         loop {
             if let Some(end) = self.pending().iter().position(|&b| b == b'\n') {
                 let with_cr = self.pending().get(..end).unwrap_or(&[]);
-                let Some((&b'\r', line)) = with_cr.split_last() else {
-                    return Err(LineError::Bare);
-                };
+                let Some((&b'\r', line)) = with_cr.split_last() else { return Err(LineError::Bare) };
                 if line.len() > limit {
                     return Err(LineError::TooLong);
                 }
@@ -212,8 +200,7 @@ impl Buffer {
             let nothing_yet = self.pending().is_empty();
             match self.fill(stream) {
                 Ok(n) if n > 0 => {}
-                Ok(_) if nothing_yet => return Err(LineError::End),
-                Err(_) if nothing_yet => return Err(LineError::End),
+                _ if nothing_yet => return Err(LineError::End),
                 _ => return Err(LineError::Cut),
             }
         }

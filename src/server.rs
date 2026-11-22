@@ -29,10 +29,8 @@ pub struct Server {
     pub identities: Vec<Option<Identity>>,
     pub acme: PathBuf,
     pub log: Box<dyn Log + Send>,
-    slots: Slots,
-}
-
-struct Slots {
+    /// Connection slots: how many are taken, the signal that one came back,
+    /// and how many there are.
     used: Mutex<usize>,
     freed: Condvar,
     cap: usize,
@@ -43,32 +41,25 @@ pub struct Slot(Arc<Server>);
 
 impl Server {
     pub fn new(
-        config: Config,
-        identities: Vec<Option<Identity>>,
-        acme: PathBuf,
-        log: Box<dyn Log + Send>,
-        cap: usize,
+        config: Config, identities: Vec<Option<Identity>>, acme: PathBuf, log: Box<dyn Log + Send>, cap: usize,
     ) -> Arc<Server> {
-        let slots = Slots { used: Mutex::new(0), freed: Condvar::new(), cap };
-        Arc::new(Server { config, identities, acme, log, slots })
+        Arc::new(Server { config, identities, acme, log, used: Mutex::new(0), freed: Condvar::new(), cap })
     }
 
-    /// The number of slots taken.
     #[cfg(test)]
     pub fn used(&self) -> usize {
-        *self.slots.used.lock().unwrap_or_else(PoisonError::into_inner)
+        *self.used.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 impl Slot {
     /// Takes a slot, waiting for one while the server is full.
     pub fn take(server: &Arc<Server>) -> Slot {
-        let slots = &server.slots;
         // The count is a plain number that is always left consistent, so a
         // lock poisoned by a panic elsewhere can still be used.
-        let mut used = slots.used.lock().unwrap_or_else(PoisonError::into_inner);
-        while *used >= slots.cap {
-            used = slots.freed.wait(used).unwrap_or_else(PoisonError::into_inner);
+        let mut used = server.used.lock().unwrap_or_else(PoisonError::into_inner);
+        while *used >= server.cap {
+            used = server.freed.wait(used).unwrap_or_else(PoisonError::into_inner);
         }
         *used = used.saturating_add(1);
         Slot(Arc::clone(server))
@@ -77,22 +68,15 @@ impl Slot {
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        let slots = &self.0.slots;
-        let mut used = slots.used.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut used = self.0.used.lock().unwrap_or_else(PoisonError::into_inner);
         *used = used.saturating_sub(1);
-        slots.freed.notify_one();
+        self.0.freed.notify_one();
     }
-}
-
-fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
 }
 
 /// Serves one connection: plain HTTP, or HTTP over TLS.
 fn connection(server: &Server, client: TcpStream, secure: bool) {
-    let Ok(peer) = client.peer_addr() else {
-        return;
-    };
+    let Ok(peer) = client.peer_addr() else { return };
     let _ = client.set_write_timeout(Some(WRITE_TIMEOUT));
     let _ = client.set_nodelay(true);
     let context = |tls_site| Context {
@@ -102,7 +86,7 @@ fn connection(server: &Server, client: TcpStream, secure: bool) {
         peer: peer.ip(),
         tls_site,
         acme: &server.acme,
-        clock: now,
+        clock: || SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()),
         timeouts: proxy::Timeouts::STANDARD,
     };
     if !secure {

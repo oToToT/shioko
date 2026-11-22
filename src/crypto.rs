@@ -21,18 +21,13 @@ pub struct Error;
 
 /// Fill `buf` from the kernel's random number generator.
 pub fn random(buf: &mut [u8]) -> Result<(), Error> {
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(buf))
-        .map_err(|_| Error)
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf)).map_err(|_| Error)
 }
 
 /// Compare two byte strings without an early exit on the first difference.
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
     let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
-    std::hint::black_box(diff) == 0
+    a.len() == b.len() && std::hint::black_box(diff) == 0
 }
 
 // ---------------------------------------------------------------- SHA-256
@@ -74,9 +69,7 @@ pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; HASH_LEN] {
 
     let mut inner = Sha256::new();
     inner.update(&block.map(|b| b ^ 0x36));
-    for part in parts {
-        inner.update(part);
-    }
+    parts.iter().for_each(|part| inner.update(part));
 
     let mut outer = Sha256::new();
     outer.update(&block.map(|b| b ^ 0x5c));
@@ -110,10 +103,7 @@ pub fn hkdf_expand(prk: &[u8; HASH_LEN], info: &[u8], out: &mut [u8]) -> Result<
 
 /// Encrypt `plaintext`; returns ciphertext followed by the 16-byte tag.
 pub fn aead_seal(
-    key: &[u8; KEY_LEN],
-    nonce: &[u8; NONCE_LEN],
-    aad: &[u8],
-    plaintext: &[u8],
+    key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], aad: &[u8], plaintext: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let mut out = vec![0u8; plaintext.len().checked_add(TAG_LEN).ok_or(Error)?];
     libcrux_chacha20poly1305::encrypt(key, plaintext, &mut out, aad, nonce).map_err(|_| Error)?;
@@ -122,10 +112,7 @@ pub fn aead_seal(
 
 /// Verify and decrypt `ciphertext` (ciphertext followed by the tag).
 pub fn aead_open(
-    key: &[u8; KEY_LEN],
-    nonce: &[u8; NONCE_LEN],
-    aad: &[u8],
-    ciphertext: &[u8],
+    key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], aad: &[u8], ciphertext: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let mut out = vec![0u8; ciphertext.len().checked_sub(TAG_LEN).ok_or(Error)?];
     libcrux_chacha20poly1305::decrypt(key, &mut out, ciphertext, aad, nonce).map_err(|_| Error)?;
@@ -154,9 +141,7 @@ pub struct SigningKey(libcrux_ecdsa::p256::PrivateKey);
 impl SigningKey {
     /// Fails unless 0 < scalar < the order of the curve.
     pub fn from_bytes(scalar: &[u8; 32]) -> Result<Self, Error> {
-        libcrux_ecdsa::p256::PrivateKey::try_from(scalar)
-            .map(SigningKey)
-            .map_err(|_| Error)
+        libcrux_ecdsa::p256::PrivateKey::try_from(scalar).map(SigningKey).map_err(|_| Error)
     }
 
     /// The public key as an uncompressed point: 0x04, X, Y.

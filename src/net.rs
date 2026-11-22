@@ -21,10 +21,7 @@ fn mapped(address: IpAddr) -> u128 {
 impl Range {
     /// Reads `address` or `address/prefix-length`.
     pub fn parse(text: &str) -> Option<Range> {
-        let (address, prefix) = match text.split_once('/') {
-            Some((address, prefix)) => (address, Some(prefix)),
-            None => (text, None),
-        };
+        let (address, prefix) = text.split_once('/').map_or((text, None), |(a, p)| (a, Some(p)));
         let address: IpAddr = address.parse().ok()?;
         let width: u32 = if address.is_ipv4() { 32 } else { 128 };
         let prefix: u32 = match prefix {
@@ -32,12 +29,9 @@ impl Range {
             Some(_) => return None,
             None => width,
         };
-        if prefix > width {
-            return None;
-        }
-        // An IPv4 range sits behind the 96 bits of the mapping prefix.
-        let bits = prefix.checked_add(128u32.checked_sub(width)?)?;
-        let mask = u128::MAX.checked_shl(128u32.checked_sub(bits)?).unwrap_or(0);
+        // The host bits are the last `width - prefix`, so an IPv4 range also
+        // covers the 96 bits of the mapping prefix in front of it.
+        let mask = u128::MAX.checked_shl(width.checked_sub(prefix)?).unwrap_or(0);
         Some(Range { network: mapped(address) & mask, mask })
     }
 

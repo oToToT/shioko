@@ -22,9 +22,9 @@ impl Log for Standard {
     }
 }
 
-/// Makes bytes that came from the network safe to print: anything that is
-/// not a visible ASCII character or a space is written as `\xNN`, and so is
-/// the backslash. A log line can then never be forged by what a peer sends.
+/// Makes bytes from the network safe to print: anything but a visible ASCII
+/// character or a space is written as `\xNN`, and so are `\` and `"`. A log
+/// line can then never be forged by what a peer sends.
 pub fn escape(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len());
     for &byte in bytes {

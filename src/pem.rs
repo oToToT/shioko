@@ -16,14 +16,13 @@ pub fn base64(text: &str) -> Option<Vec<u8>> {
             b'0'..=b'9' => byte - b'0' + 52,
             b'+' => 62,
             b'/' => 63,
-            b'=' => {
-                padding += 1;
-                0
-            }
+            b'=' => 0,
             _ => return None,
         };
         // Nothing but padding may follow padding.
-        if padding > 0 && byte != b'=' {
+        if byte == b'=' {
+            padding += 1;
+        } else if padding > 0 {
             return None;
         }
         *quad.get_mut(filled)? = value;
@@ -31,13 +30,8 @@ pub fn base64(text: &str) -> Option<Vec<u8>> {
         if filled == 4 {
             let [a, b, c, d] = quad;
             out.extend_from_slice(&[a << 2 | b >> 4, b << 4 | c >> 2, c << 6 | d]);
+            out.truncate(out.len().checked_sub(padding)?);
             filled = 0;
-            if padding > 0 {
-                out.truncate(out.len().checked_sub(padding)?);
-                if padding > 2 {
-                    return None;
-                }
-            }
         }
     }
     (filled == 0 && padding <= 2).then_some(out)
@@ -49,12 +43,10 @@ pub fn blocks(text: &str, label: &str) -> Result<Vec<Vec<u8>>, String> {
     let end = format!("-----END {label}-----");
     let mut found = Vec::new();
     let mut rest = text;
-    while let Some(start) = rest.find(&begin) {
-        let after = rest.get(start + begin.len()..).unwrap_or("");
-        let stop = after.find(&end).ok_or(format!("a {label} block has no end"))?;
-        let body = after.get(..stop).unwrap_or("");
+    while let Some((_, after)) = rest.split_once(&begin) {
+        let (body, next) = after.split_once(&end).ok_or(format!("a {label} block has no end"))?;
         found.push(base64(body).ok_or(format!("a {label} block is not valid base64"))?);
-        rest = after.get(stop + end.len()..).unwrap_or("");
+        rest = next;
     }
     Ok(found)
 }
@@ -90,14 +82,14 @@ const P256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 /// curve, the curve must be P-256.
 fn sec1(der: &[u8]) -> Result<[u8; 32], String> {
     let bad = || "the key is not an EC private key".to_string();
-    let (SEQUENCE, body, []) = element(der).ok_or_else(bad)? else { return Err(bad()) };
-    let (INTEGER, [1], body) = element(body).ok_or_else(bad)? else { return Err(bad()) };
-    let (OCTET_STRING, scalar, mut rest) = element(body).ok_or_else(bad)? else { return Err(bad()) };
+    let Some((SEQUENCE, body, [])) = element(der) else { return Err(bad()) };
+    let Some((INTEGER, [1], body)) = element(body) else { return Err(bad()) };
+    let Some((OCTET_STRING, scalar, mut rest)) = element(body) else { return Err(bad()) };
     while !rest.is_empty() {
         let (tag, contents, after) = element(rest).ok_or_else(bad)?;
         // [0] parameters: the curve.
         if tag == 0xa0 {
-            let (OBJECT, oid, []) = element(contents).ok_or_else(bad)? else { return Err(bad()) };
+            let Some((OBJECT, oid, [])) = element(contents) else { return Err(bad()) };
             if oid != P256 {
                 return Err("the key is not on the P-256 curve".into());
             }
@@ -111,18 +103,18 @@ fn sec1(der: &[u8]) -> Result<[u8; 32], String> {
 /// P-256 key.
 fn pkcs8(der: &[u8]) -> Result<[u8; 32], String> {
     let bad = || "the key is not a PKCS#8 private key".to_string();
-    let (SEQUENCE, body, []) = element(der).ok_or_else(bad)? else { return Err(bad()) };
-    let (INTEGER, [0], body) = element(body).ok_or_else(bad)? else { return Err(bad()) };
-    let (SEQUENCE, algorithm, body) = element(body).ok_or_else(bad)? else { return Err(bad()) };
-    let (OBJECT, kind, parameters) = element(algorithm).ok_or_else(bad)? else { return Err(bad()) };
+    let Some((SEQUENCE, body, [])) = element(der) else { return Err(bad()) };
+    let Some((INTEGER, [0], body)) = element(body) else { return Err(bad()) };
+    let Some((SEQUENCE, algorithm, body)) = element(body) else { return Err(bad()) };
+    let Some((OBJECT, kind, parameters)) = element(algorithm) else { return Err(bad()) };
     if kind != EC_PUBLIC_KEY {
         return Err("the key is not an EC key (only ECDSA P-256 keys are supported)".into());
     }
-    let (OBJECT, curve, []) = element(parameters).ok_or_else(bad)? else { return Err(bad()) };
+    let Some((OBJECT, curve, [])) = element(parameters) else { return Err(bad()) };
     if curve != P256 {
         return Err("the key is not on the P-256 curve".into());
     }
-    let (OCTET_STRING, inner, _attributes) = element(body).ok_or_else(bad)? else { return Err(bad()) };
+    let Some((OCTET_STRING, inner, _attributes)) = element(body) else { return Err(bad()) };
     sec1(inner)
 }
 
@@ -131,9 +123,7 @@ pub fn private_key(text: &str) -> Result<[u8; 32], String> {
     if text.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
         return Err("the key is encrypted".into());
     }
-    let pkcs8_blocks = blocks(text, "PRIVATE KEY")?;
-    let sec1_blocks = blocks(text, "EC PRIVATE KEY")?;
-    match (pkcs8_blocks.as_slice(), sec1_blocks.as_slice()) {
+    match (blocks(text, "PRIVATE KEY")?.as_slice(), blocks(text, "EC PRIVATE KEY")?.as_slice()) {
         ([der], []) => pkcs8(der),
         ([], [der]) => sec1(der),
         ([], []) => Err("no private key found".into()),
@@ -144,10 +134,7 @@ pub fn private_key(text: &str) -> Result<[u8; 32], String> {
 /// The certificates of a PEM chain file, leaf first, as DER.
 pub fn certificates(text: &str) -> Result<Vec<Vec<u8>>, String> {
     let chain = blocks(text, "CERTIFICATE")?;
-    if chain.is_empty() {
-        return Err("no certificate found".into());
-    }
-    Ok(chain)
+    if chain.is_empty() { Err("no certificate found".into()) } else { Ok(chain) }
 }
 
 #[cfg(kani)]

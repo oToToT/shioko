@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 /// The largest request body a site takes unless it says otherwise.
 const DEFAULT_MAX_BODY: u64 = 1024 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Site {
     /// The host name, in lower case.
     pub name: String,
@@ -63,13 +63,8 @@ impl Config {
     pub fn parse(text: &str, read: &dyn Fn(&Path) -> Result<String, String>) -> Result<Config, String> {
         let mut sites: Vec<Site> = Vec::new();
         let mut section: Option<Section> = None;
-        for (index, raw) in text.lines().enumerate() {
-            let number = index.saturating_add(1);
+        for (number, line) in meaningful(text) {
             let fail = |message: String| format!("line {number}: {message}");
-            let line = raw.split('#').next().unwrap_or("").trim();
-            if line.is_empty() {
-                continue;
-            }
             if let Some(name) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
                 if let Some(done) = section.take() {
                     sites.push(done.finish()?);
@@ -99,83 +94,68 @@ impl Config {
     }
 }
 
+/// The lines of `text` that are not blank once comments are cut off,
+/// numbered from 1.
+fn meaningful(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let lines = text.lines().map(|line| line.split('#').next().unwrap_or("").trim());
+    (1..).zip(lines).filter(|(_, line)| !line.is_empty())
+}
+
 fn is_host_name(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
 }
 
-/// A section while it is being read.
+/// A section while it is being read: the site so far, and the settings
+/// already given.
 struct Section {
-    name: String,
+    site: Site,
     line: usize,
-    upstream: Option<String>,
-    cert: Option<PathBuf>,
-    key: Option<PathBuf>,
-    websocket: Option<bool>,
-    allow: Option<Vec<Range>>,
-    max_body: Option<u64>,
+    seen: Vec<&'static str>,
 }
 
 impl Section {
     fn new(name: String, line: usize) -> Section {
-        Section { name, line, upstream: None, cert: None, key: None, websocket: None, allow: None, max_body: None }
+        Section { site: Site { name, max_body: DEFAULT_MAX_BODY, ..Site::default() }, line, seen: Vec::new() }
     }
 
-    fn set(
-        &mut self,
-        key: &str,
-        value: &str,
-        read: &dyn Fn(&Path) -> Result<String, String>,
-    ) -> Result<(), String> {
-        let repeated = match key {
-            "upstream" => self.upstream.is_some(),
-            "cert" => self.cert.is_some(),
-            "key" => self.key.is_some(),
-            "websocket" => self.websocket.is_some(),
-            "allow" => self.allow.is_some(),
-            "max-body" => self.max_body.is_some(),
-            _ => return Err(format!("unknown setting '{key}'")),
+    fn set(&mut self, key: &str, value: &str, read: &dyn Fn(&Path) -> Result<String, String>) -> Result<(), String> {
+        const SETTINGS: [&str; 6] = ["upstream", "cert", "key", "websocket", "allow", "max-body"];
+        let Some(&key) = SETTINGS.iter().find(|setting| **setting == key) else {
+            return Err(format!("unknown setting '{key}'"));
         };
-        if repeated {
+        if self.seen.contains(&key) {
             return Err(format!("'{key}' is set twice"));
         }
+        self.seen.push(key);
         if value.is_empty() {
             return Err(format!("'{key}' has no value"));
         }
+        let site = &mut self.site;
         match key {
-            "upstream" => self.upstream = Some(upstream(value)?),
+            "upstream" => site.upstream = upstream(value)?,
             "cert" | "key" => {
                 let path = PathBuf::from(value);
                 read(&path).map_err(|e| format!("cannot read {value}: {e}"))?;
-                if key == "cert" { self.cert = Some(path) } else { self.key = Some(path) }
+                if key == "cert" { site.cert = Some(path) } else { site.key = Some(path) }
             }
-            "websocket" => {
-                self.websocket = Some(match value {
-                    "yes" => true,
-                    "no" => false,
-                    _ => return Err(format!("websocket is 'yes' or 'no', not '{value}'")),
-                });
-            }
-            "allow" => self.allow = Some(allow(value, read)?),
-            _ => self.max_body = Some(size(value).ok_or(format!("'{value}' is not a size"))?),
+            "websocket" if value == "yes" || value == "no" => site.websocket = value == "yes",
+            "websocket" => return Err(format!("websocket is 'yes' or 'no', not '{value}'")),
+            "allow" => site.allow = Some(allow(value, read)?),
+            _ => site.max_body = size(value).ok_or(format!("'{value}' is not a size"))?,
         }
         Ok(())
     }
 
     fn finish(self) -> Result<Site, String> {
-        let fail = |message: &str| format!("line {}: site '{}' {message}", self.line, self.name);
-        let upstream = self.upstream.ok_or_else(|| fail("has no upstream"))?;
-        if self.cert.is_some() != self.key.is_some() {
-            return Err(fail("needs both cert and key, or neither"));
+        let fail = |message: &str| Err(format!("line {}: site '{}' {message}", self.line, self.site.name));
+        // No setting is empty, so an empty upstream is one never given.
+        if self.site.upstream.is_empty() {
+            return fail("has no upstream");
         }
-        Ok(Site {
-            name: self.name,
-            upstream,
-            cert: self.cert,
-            key: self.key,
-            websocket: self.websocket.unwrap_or(false),
-            allow: self.allow,
-            max_body: self.max_body.unwrap_or(DEFAULT_MAX_BODY),
-        })
+        if self.site.cert.is_some() != self.site.key.is_some() {
+            return fail("needs both cert and key, or neither");
+        }
+        Ok(self.site)
     }
 }
 
@@ -201,20 +181,14 @@ fn upstream(value: &str) -> Result<String, String> {
 fn allow(value: &str, read: &dyn Fn(&Path) -> Result<String, String>) -> Result<Vec<Range>, String> {
     let mut ranges = Vec::new();
     for item in value.split_whitespace() {
-        if item.starts_with('/') {
-            let text = read(Path::new(item)).map_err(|e| format!("cannot read {item}: {e}"))?;
-            for (index, line) in text.lines().enumerate() {
-                let line = line.split('#').next().unwrap_or("").trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let range = Range::parse(line).ok_or_else(|| {
-                    format!("{item} line {}: '{line}' is not an address range", index.saturating_add(1))
-                })?;
-                ranges.push(range);
-            }
-        } else {
+        if !item.starts_with('/') {
             ranges.push(Range::parse(item).ok_or(format!("'{item}' is not an address range"))?);
+            continue;
+        }
+        let text = read(Path::new(item)).map_err(|e| format!("cannot read {item}: {e}"))?;
+        for (number, line) in meaningful(&text) {
+            let bad = || format!("{item} line {number}: '{line}' is not an address range");
+            ranges.push(Range::parse(line).ok_or_else(bad)?);
         }
     }
     Ok(ranges)
