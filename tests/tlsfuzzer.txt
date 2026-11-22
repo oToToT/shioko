@@ -32,8 +32,7 @@ run test-tls13-connection-abort.py
 run test-tls13-conversation.py
 run test-tls13-count-tickets.py
 run test-tls13-crfg-curves.py
-    fail ^empty x(448|25519) key share$ ~ "decode_error" ~ an empty key_exchange is shorter than its vector's minimum of 1, which makes it a decode error; tlsfuzzer wants illegal_parameter
-    fail x448 ~ handshake_failure ~ profile: X448 shares are ignored, and without an X25519 one there is no group in common
+    fail ^(?!empty ).*x448 ~ handshake_failure ~ profile: X448 shares are ignored, and without an X25519 one there is no group in common
 run test-tls13-dhe-shared-secret-padding.py
     fail ^"TLS 1\.3 with (x448|secp384r1|secp521r1|ffdhe\d+)" repeat \d+$ ~ handshake_failure ~ profile
 run test-tls13-ecdhe-brainpool-curves.py
@@ -48,8 +47,7 @@ run test-tls13-eddsa.py
     fail ^ed(448|25519) only$ ~ handshake_failure ~ profile
 run test-tls13-empty-alert.py
 run test-tls13-ffdhe-groups.py
-    fail empty key share entry ~ "decode_error" ~ an empty key_exchange is shorter than its vector's minimum of 1
-    fail . ~ handshake_failure ~ profile: no FFDHE groups
+    fail ^(?!.*empty key share entry) ~ handshake_failure ~ profile: no FFDHE groups
 run test-tls13-ffdhe-sanity.py
     fail . ~ handshake_failure ~ profile: no FFDHE groups
 run test-tls13-finished.py

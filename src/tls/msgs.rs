@@ -86,7 +86,7 @@ fn extension<'a, T>(data: Option<Reader<'a>>, read: impl FnOnce(&mut Reader<'a>)
 /// 2. it offers TLS 1.3 (`protocol_version`);
 /// 3. compression is exactly "none", no extension is repeated, a cookie is
 ///    not sent, `pre_shared_key` comes last, server_name holds one host
-///    name (`illegal_parameter`), and `pre_shared_key` has
+///    name, no key share is empty (`illegal_parameter`), and `pre_shared_key` has
 ///    `psk_key_exchange_modes` with it (`missing_extension`);
 /// 4. `signature_algorithms`, `supported_groups`, `key_share` and
 ///    `server_name` are there (`missing_extension`);
@@ -134,12 +134,7 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
         let mut list = Vec::new();
         while !entries.is_empty() {
             let group = entries.u16()?;
-            // key_exchange<1..2^16-1>
-            let key = entries.vec16()?.rest();
-            if key.is_empty() {
-                return None;
-            }
-            list.push((group, key));
+            list.push((group, entries.vec16()?.rest()));
         }
         Some(list)
     })?;
@@ -177,7 +172,9 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
 
     // 3. What may not be there, or not like this.
     let two_names = server_name.is_some_and(|(_, two)| two);
-    if compression != [0] || repeated || get(COOKIE).is_some() || !psk_last || two_names {
+    // key_exchange<1..2^16-1>: an empty one is a bad value, for any group.
+    let empty_share = shares.as_ref().is_some_and(|s| s.iter().any(|(_, key)| key.is_empty()));
+    if compression != [0] || repeated || get(COOKIE).is_some() || !psk_last || two_names || empty_share {
         return Err(Alert::IllegalParameter);
     }
     if get(PRE_SHARED_KEY).is_some() && get(PSK_KEY_EXCHANGE_MODES).is_none() {
@@ -557,11 +554,19 @@ pub mod tests {
     }
 
     /// Bug (found in review): a key share with no key bytes was taken for
-    /// groups other than X25519; key_exchange may not be empty.
+    /// groups other than X25519; key_exchange may not be empty. It is
+    /// refused with illegal_parameter (tlsfuzzer's expectation), also for a
+    /// group we do not support and before we look for a group in common.
     #[test]
     fn bug_empty_key_share_was_accepted() {
         let hello = Hello::new("site.test", &SHARE).set(KEY_SHARE, key_shares(&[(0x0017, &[]), (X25519, &SHARE)]));
-        assert_eq!(check(&hello).err(), Some(Alert::DecodeError));
+        assert_eq!(check(&hello).err(), Some(Alert::IllegalParameter));
+        let x25519 = Hello::new("site.test", &SHARE).set(KEY_SHARE, key_shares(&[(X25519, &[])]));
+        assert_eq!(check(&x25519).err(), Some(Alert::IllegalParameter));
+        let ffdhe = Hello::new("site.test", &SHARE)
+            .set(SUPPORTED_GROUPS, vec16(&u16s(&[0x0100])))
+            .set(KEY_SHARE, key_shares(&[(0x0100, &[])]));
+        assert_eq!(check(&ffdhe).err(), Some(Alert::IllegalParameter));
     }
 
     /// Bug (found in review): a ClientHello with legacy_version 0x0300
