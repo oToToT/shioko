@@ -229,9 +229,12 @@ tools/check.sh         # lint, tests, release builds for both targets
 tools/spec.sh          # model-check the specs, check the RFC lists
 tools/prove.sh         # Kani proofs
 tools/interop.sh       # a real shioko against OpenSSL and curl
-tools/ci.sh            # all of the above in Linux containers, and tlsfuzzer
-tools/ci.sh STAGE...   # some of it: specs proofs interop unit tlsfuzzer
+tools/ci.sh            # all of the above in Linux containers, tlsfuzzer,
+                       # and a short run of every fuzz target
+tools/ci.sh STAGE...   # some of it: specs proofs interop unit tlsfuzzer fuzz
                        # linux/amd64 linux/arm64
+tools/fuzz.sh [SECONDS] [TARGET...]
+                       # coverage-guided fuzzing (needs nightly and cargo-fuzz)
 ```
 
 GitHub Actions (`.github/workflows/ci.yml`) verifies every push to `main` and

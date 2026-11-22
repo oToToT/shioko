@@ -1,0 +1,38 @@
+# The end-to-end configuration: one of each kind of site.
+
+# A password vault behind an allowlist, taking large attachments.
+[vault.test]
+upstream  = 10.88.0.21:80
+cert      = /certs/vault.test.chain.pem
+key       = /certs/vault.test.key
+websocket = yes
+allow     = /certs/allowed.txt
+max-body  = 525M
+
+# A media server.
+[media.test]
+upstream  = 10.88.0.22:8096
+cert      = /certs/media.test.chain.pem
+key       = /certs/media.test.key
+websocket = yes
+
+# Our test upstream, for WebSockets and every kind of response.
+[chat.test]
+upstream  = 10.88.0.20:8080
+cert      = /certs/chat.test.chain.pem
+key       = /certs/chat.test.key
+websocket = yes
+
+# The test upstream again, for large uploads.
+[files.test]
+upstream  = 10.88.0.20:8080
+cert      = /certs/files.test.chain.pem
+key       = /certs/files.test.key
+max-body  = 525M
+
+# A plain-HTTP site for the inside network.
+[wiki.internal]
+upstream = 10.88.0.20:8080
+allow    = 10.88.0.0/24
+
+# mail.test needs no entry: certbot gets its certificate through port 80.

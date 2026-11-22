@@ -1,0 +1,74 @@
+# Coverage-guided fuzzing of shioko (tools/fuzz.sh). Development only: a
+# workspace of its own, so that libFuzzer and its build stay out of
+# shioko's Cargo.lock and of every binary.
+[package]
+name = "shioko-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+shioko = { path = ".." }
+
+[workspace]
+
+# As in shioko's own Cargo.toml: patches apply only from the workspace root.
+[patch.crates-io]
+libcrux-platform = { path = "../patches/libcrux-platform" }
+
+[profile.release]
+debug = 1
+overflow-checks = true
+
+[[bin]]
+name = "client_hello"
+path = "fuzz_targets/client_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_heads"
+path = "fuzz_targets/http_heads.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bodies"
+path = "fuzz_targets/bodies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pem"
+path = "fuzz_targets/pem.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_connection"
+path = "fuzz_targets/http_connection.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_connection"
+path = "fuzz_targets/tls_connection.rs"
+test = false
+doc = false
+bench = false

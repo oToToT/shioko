@@ -31,6 +31,7 @@ jobs:
           - { stage: interop, runner: ubuntu-24.04 }
           - { stage: unit, runner: ubuntu-24.04 }
           - { stage: tlsfuzzer, runner: ubuntu-24.04 }
+          - { stage: fuzz, runner: ubuntu-24.04 }
           - { stage: linux/amd64, runner: ubuntu-24.04 }
           - { stage: linux/arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.runner }}

@@ -2,3 +2,6 @@ target
 .git
 .claude
 **/__pycache__
+fuzz/target
+fuzz/corpus
+fuzz/artifacts
