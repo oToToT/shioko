@@ -37,8 +37,10 @@ const RETRY_RANDOM: [u8; 32] = [
     0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
 ];
 
-/// The longest handshake message we take from a client.
-pub const MESSAGE_LIMIT: usize = 1 << 16;
+/// The longest handshake message we take from a client: the longest
+/// ClientHello there can be, with every vector at its largest (version,
+/// random, session id, cipher suites, compression methods, extensions).
+pub const MESSAGE_LIMIT: usize = 2 + 32 + (1 + 32) + (2 + 65534) + (1 + 255) + (2 + 65535);
 
 /// What we need of a ClientHello we can serve.
 #[derive(Debug, PartialEq, Eq)]

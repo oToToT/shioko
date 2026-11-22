@@ -161,3 +161,10 @@ break wrong-type
 expect invariant TypeOK
 -            WriteKeys("data")>>
 +            WriteKeys("application")>>
+
+# An unencrypted alert from a client that could not read our ServerHello is
+# answered, as if the client should have had keys.
+break unencrypted-alert-answered
+expect invariant PlainRefusedAfterKeys
+-    ELSE IF ~protected /\ s.phase = "wait_finished" /\ c \in {"alert", "close_notify"} THEN
++    ELSE IF FALSE THEN

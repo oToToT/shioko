@@ -639,7 +639,7 @@ fn bug_plaintext_alert_after_our_keys_was_not_logged() {
     client.send_hello(&hello("site.test"));
     client.through_flight(&public("site.test"));
     client.send(record::ALERT, &[2, 42]);
-    assert_eq!(client.alert(), Some(10));
+    assert_eq!(client.get(), Got::End);
     std::thread::sleep(Duration::from_millis(100));
     let log = world.log.0.lock().unwrap().clone();
     assert!(log.iter().any(|line| line.ends_with("tls: received bad_certificate")), "{log:?}");
@@ -807,4 +807,35 @@ fn sent_alerts_are_logged() {
     std::thread::sleep(Duration::from_millis(100));
     let log = world.log.0.lock().unwrap().clone();
     assert!(log.iter().any(|l| l.ends_with("tls: sent unrecognized_name")), "{log:?}");
+}
+
+/// Bug (found by tlsfuzzer): a client that cannot read our ServerHello has
+/// no keys, so its alert comes unencrypted. We answered it with
+/// unexpected_message instead of closing, as after any other alert.
+#[test]
+fn bug_unencrypted_alert_during_the_handshake_was_answered() {
+    let address = server();
+    for alert in [[2, 40], [1, 0]] {
+        let mut client = Client::connect(address);
+        client.send_hello(&hello("site.test"));
+        client.through_flight(&public("site.test"));
+        client.send(record::ALERT, &alert);
+        assert_eq!(client.get(), Got::End, "{alert:?}");
+    }
+}
+
+/// Bug (found by tlsfuzzer): handshake messages were limited to 64 KB, so a
+/// ClientHello with its extensions at their largest, which is valid, got
+/// decode_error. The limit is now the longest ClientHello there can be.
+#[test]
+fn bug_the_largest_client_hellos_were_refused() {
+    let address = server();
+    let mut big = hello("site.test");
+    let extensions = big.extensions.as_mut().unwrap();
+    let used: usize = extensions.iter().map(|(_, data)| 4 + data.len()).sum();
+    extensions.push((0x4444, vec![0; 65535 - used - 4]));
+    big.suites = [0x1303].into_iter().chain(std::iter::repeat_n(0x0a0a, 32766)).collect();
+    assert!(big.bytes().len() > 131_000);
+    let (_, got) = first_answer(address, &big);
+    assert!(matches!(got, Got::Handshake(ref m) if m[0][0] == msgs::SERVER_HELLO), "{got:?}");
 }

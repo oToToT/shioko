@@ -121,6 +121,11 @@ OnRecord(s, protected, c) ==
         \* Early data sent before our HelloRetryRequest arrived. Without
         \* read keys it shows as a record of the application data type.
         [state |-> s, acts |-> <<Skip>>]
+    ELSE IF ~protected /\ s.phase = "wait_finished" /\ c \in {"alert", "close_notify"} THEN
+        \* A client that cannot read our ServerHello has no keys, so its
+        \* alert comes unencrypted. It ends the connection like any alert,
+        \* with nothing said back.
+        Close(<<>>)
     ELSE IF protected # (s.phase \in {"wait_finished", "open"}) THEN
         \* Once we have read keys every record must be protected, and
         \* before that none can be.
@@ -231,13 +236,18 @@ SplitMessageNotInterleaved ==
         (s.partial /\ s.phase # "closed") => Step(s, e) = Fail("unexpected_message")
 
 \* Once we have read keys, an unencrypted record is never used. The only one
-\* tolerated is the dummy ChangeCipherSpec before the client Finished.
+\* tolerated is the dummy ChangeCipherSpec before the client Finished; an
+\* unencrypted alert before it ends the connection without an answer.
 PlainRefusedAfterKeys ==
     \A s \in States, c \in Contents :
         s.phase \in {"wait_finished", "open"} =>
-            \/ Step(s, <<"plain", c>>) = Fail("unexpected_message")
-            \/ /\ c = "ccs" /\ s.phase = "wait_finished" /\ ~s.partial
-               /\ Step(s, <<"plain", c>>) = Stay(s)
+            Step(s, <<"plain", c>>) =
+                IF s.phase = "wait_finished" /\ ~s.partial /\ c = "ccs"
+                THEN Stay(s)
+                ELSE IF s.phase = "wait_finished" /\ ~s.partial
+                        /\ c \in {"alert", "close_notify"}
+                THEN Close(<<>>)
+                ELSE Fail("unexpected_message")
 
 (***************************************************************************)
 (* Part 2: the connection around the state machine                         *)

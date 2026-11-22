@@ -215,6 +215,11 @@ fn on_record(s: State, protected: bool, c: Content) -> Result {
         // Early data sent before our HelloRetryRequest arrived.
         return (s, vec![Action::Skip]);
     }
+    if !protected && s.phase == P::WaitFinished && matches!(c, C::Alert | C::CloseNotify) {
+        // A client that cannot read our ServerHello has no keys, so its
+        // alert comes unencrypted. It ends the connection like any alert.
+        return (CLOSED, vec![]);
+    }
     if protected != have_read_keys {
         return fail(Alert::UnexpectedMessage);
     }
