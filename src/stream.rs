@@ -450,7 +450,7 @@ pub mod testing {
             Noise(seed | 1)
         }
     
-        pub fn next(&mut self) -> u64 {
+        pub fn next_u64(&mut self) -> u64 {
             self.0 ^= self.0 << 13;
             self.0 ^= self.0 >> 7;
             self.0 ^= self.0 << 17;
@@ -458,7 +458,7 @@ pub mod testing {
         }
     
         pub fn below(&mut self, n: usize) -> usize {
-            usize::try_from(self.next() % u64::try_from(n.max(1)).unwrap()).unwrap()
+            usize::try_from(self.next_u64() % u64::try_from(n.max(1)).unwrap()).unwrap()
         }
     
         /// `input` with a few random changes: bytes flipped, set, inserted or
@@ -469,8 +469,8 @@ pub mod testing {
                 let at = self.below(out.len() + 1);
                 match self.below(5) {
                     0 if at < out.len() => out[at] ^= 1 << self.below(8),
-                    1 if at < out.len() => out[at] = self.next() as u8,
-                    2 => out.insert(at, self.next() as u8),
+                    1 if at < out.len() => out[at] = self.next_u64() as u8,
+                    2 => out.insert(at, self.next_u64() as u8),
                     3 if at < out.len() => {
                         out.remove(at);
                     }

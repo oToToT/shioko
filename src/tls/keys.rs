@@ -114,14 +114,8 @@ pub fn verify_data(secret: &Secret, transcript: &[u8; HASH_LEN]) -> [u8; HASH_LE
 }
 
 /// The running hash of the handshake messages.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Transcript(Sha256);
-
-impl Default for Transcript {
-    fn default() -> Transcript {
-        Transcript(Sha256::new())
-    }
-}
 
 impl Transcript {
     pub fn add(&mut self, message: &[u8]) {

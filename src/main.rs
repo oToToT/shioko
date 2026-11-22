@@ -5,37 +5,15 @@
 //! shioko check [config]   check the configuration and exit
 //! ```
 
-#![cfg_attr(test, allow(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used, clippy::panic))]
-
-/// Records a step of spec/Server.tla in `--features record` builds; in
-/// other builds it is nothing at all.
-macro_rules! record {
-    ($($what:tt)*) => {
-        #[cfg(feature = "record")]
-        crate::record::step(&format!($($what)*));
-    };
-}
-
-mod config;
-mod crypto;
-mod http;
-mod log;
-mod net;
-mod pem;
-#[cfg(feature = "record")]
-mod record;
-mod server;
 #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
-mod signals;
-mod stream;
-mod tls;
-
-use config::Config;
-use log::Log;
+use shioko::signals;
+use shioko::config::Config;
+use shioko::log::{self, Log};
+use shioko::tls::conn::Identity;
+use shioko::{crypto, server};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use tls::conn::Identity;
 
 const DEFAULT_CONFIG: &str = "/etc/shioko/shioko.conf";
 /// Where `certbot --webroot -w /var/lib/shioko/acme` puts its tokens.

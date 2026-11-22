@@ -66,6 +66,12 @@ pub fn sha256(data: &[u8]) -> [u8; HASH_LEN] {
 #[derive(Clone)]
 pub struct Sha256(libcrux_sha2::Sha256);
 
+impl Default for Sha256 {
+    fn default() -> Self {
+        Sha256::new()
+    }
+}
+
 impl Sha256 {
     pub fn new() -> Self {
         Sha256(libcrux_sha2::Sha256::new())
