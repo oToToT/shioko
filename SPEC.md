@@ -15,8 +15,9 @@ in `spec/rfc/` cite the sections of this file by number ("SPEC 5").
   pinned by version and checksum in `Cargo.lock`.
 - Designs of the three state machines are model-checked in TLA+, and the Rust
   state machines are tested against the checked models.
-- TLS 1.3 only. Restart instead of reload. Development tools (TLC, openssl,
-  curl, fuzzers) are allowed; they never end up in the binary.
+- TLS 1.3 only. A changed configuration needs a restart; renewed
+  certificates do not. Development tools (TLC, openssl, curl, fuzzers) are
+  allowed; they never end up in the binary.
 
 ## 2. Scope
 
@@ -166,6 +167,8 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
   backs up into the kernel queue. Slots are released by an RAII guard on
   every exit path, including panics.
 - `/dev/urandom` is opened once, at startup, and kept open.
+- A watcher thread reads the certificate and key files again every minute
+  (section 5).
 - `unsafe` is denied by a lint, and allowed by name only in `crypto::wipe`,
   which overwrites secrets with volatile writes. Every `unsafe` block has a
   `SAFETY:` comment, which clippy requires.
@@ -333,6 +336,11 @@ Certificates and keys:
   32-byte scalar.
 - Startup check: the public key derived from the private key must appear in
   the leaf certificate bytes, otherwise startup fails.
+- The files are read again every minute. A site whose certificate or key
+  changed gets the new pair for the handshakes that follow, once it has
+  passed the same checks; a pair that does not leaves the one before in
+  place, and the log says why. Open connections keep the pair they started
+  with.
 - Nothing else about the chain is checked: its order, key usage and
   signature algorithms are whatever the certificate file holds.
 - The `shioko` user needs read access to the configured paths. For
@@ -821,7 +829,8 @@ The end-to-end environment needs only Docker. `tools/e2e.sh` runs
   limited to IPv4/IPv6, syscall filter, `Restart=always`,
   `ExecStartPre=shioko check`.
 - Certificates: the config points at the certificate files directly. A certbot
-  deploy hook re-asserts read access for `shioko` and restarts the service.
+  deploy hook re-asserts read access for `shioko`; shioko takes the renewed
+  certificate up within a minute, without a restart.
   Renewal configs are switched to `--webroot` with `certbot reconfigure` after
   cutover.
 - Logs go to journald; no log files and no logrotate.

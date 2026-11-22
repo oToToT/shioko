@@ -31,7 +31,7 @@ fn public(name: &str) -> [u8; 65] {
 
 struct World {
     config: Config,
-    identities: Vec<Option<Identity>>,
+    identities: Vec<Option<std::sync::Arc<Identity>>>,
     log: Kept,
     /// How each connection's reading ended: "end" after an orderly close,
     /// "error" otherwise.
@@ -52,7 +52,10 @@ fn world() -> &'static World {
     let mut big = identity("site.test");
     let ca = big.chain[1].clone();
     big.chain.extend(std::iter::repeat_n(ca, 40));
-    let identities = vec![Some(identity("site.test")), Some(identity("tls.test")), None, Some(identity("site.test")), Some(big)];
+    let identities = [Some(identity("site.test")), Some(identity("tls.test")), None, Some(identity("site.test")), Some(big)]
+        .into_iter()
+        .map(|identity| identity.map(std::sync::Arc::new))
+        .collect();
     Box::leak(Box::new(World { config, identities, log: Kept::default(), ends: std::sync::Mutex::new(Vec::new()) }))
 }
 

@@ -2,7 +2,7 @@
 # Checks deploy/ with the tools of a real system: the unit must verify
 # cleanly and its exposure score stay low, and the certbot hook must let
 # shioko read a certificate laid out as certbot lays it out, and nobody
-# else. Used by tools/ci.sh.
+# else, without restarting shioko. Used by tools/ci.sh.
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends acl systemd \
     && rm -rf /var/lib/apt/lists/*
@@ -14,7 +14,7 @@ RUN --network=none systemd-analyze verify /etc/systemd/system/shioko.service \
     && systemd-analyze security --offline=true --threshold=20 \
         /etc/systemd/system/shioko.service
 # certbot's layout and modes, and a systemctl that only says what it was
-# asked.
+# asked, which the hook must not ask anything.
 RUN --network=none set -eu; \
     mkdir -p /etc/letsencrypt/live/site /etc/letsencrypt/archive/site; \
     chmod 0700 /etc/letsencrypt/live /etc/letsencrypt/archive; \
@@ -31,5 +31,5 @@ RUN --network=none set -eu; \
     if setpriv --reuid other --regid other --init-groups cat /etc/letsencrypt/live/site/privkey.pem 2> /dev/null; \
         then echo "another user can read the key"; exit 1; fi; \
     test "$(stat -c %a /etc/letsencrypt/archive/site/privkey1.pem)" != 644; \
-    grep -qx 'systemctl try-restart shioko' /tmp/systemctl; \
-    echo "certbot hook: shioko reads the certificate and key, others do not"
+    if [ -e /tmp/systemctl ]; then echo "the hook ran $(cat /tmp/systemctl)"; exit 1; fi; \
+    echo "certbot hook: shioko reads the certificate and key, others do not, nothing restarted"

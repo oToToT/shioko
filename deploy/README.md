@@ -204,9 +204,10 @@ with ACLs, so nothing else about the files changes; run it once for each:
 RENEWED_LINEAGE=/etc/letsencrypt/live/NAME /etc/letsencrypt/renewal-hooks/deploy/shioko
 ```
 
-(It restarts shioko only if shioko is running, so before the cutover it
-only grants access.) Then check the configuration as the `shioko` user
-would read it:
+(It only grants access. After each renewal certbot runs it again, and
+shioko, which reads its certificates again every minute, takes the new
+one up for new connections without a restart.) Then check the
+configuration as the `shioko` user would read it:
 
 ```
 setpriv --reuid shioko --regid shioko --init-groups /usr/local/bin/shioko check /etc/shioko/shioko.conf
@@ -273,8 +274,8 @@ sed -i '/^installer = nginx$/d' /etc/letsencrypt/renewal/NAME.conf
 ```
 
 The `sed` removes the nginx installer, if the file still names it, so that
-renewals do not try to reload nginx; the deploy hook restarts shioko
-instead. `certbot reconfigure` (certbot 2.3 and later) tries a renewal
+renewals do not try to reload nginx; shioko takes renewed certificates up
+by itself. `certbot reconfigure` (certbot 2.3 and later) tries a renewal
 first and changes nothing if it fails. With an older certbot, edit
 `/etc/letsencrypt/renewal/NAME.conf` by hand: under `[renewalparams]` set
 `authenticator = webroot` and `webroot_path = /var/lib/shioko/acme,`, remove

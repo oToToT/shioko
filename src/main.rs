@@ -87,6 +87,11 @@ fn main() -> ExitCode {
         ));
     }
     let server = server::Server::new(config, identities, PathBuf::from(ACME_DIRECTORY), Box::new(log), cap);
+    let watched = std::sync::Arc::clone(&server);
+    if std::thread::Builder::new().spawn(move || server::watch(&watched)).is_err() {
+        eprintln!("cannot start the certificate watcher");
+        return ExitCode::FAILURE;
+    }
     let shared = std::sync::Arc::clone(&server);
     if std::thread::Builder::new().spawn(move || server::listen(&shared, &plain, false)).is_err() {
         eprintln!("cannot start the listener for port 80");

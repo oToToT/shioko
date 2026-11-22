@@ -31,7 +31,7 @@ use std::io;
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// How long a handshake may take, from the first byte to the client
@@ -70,7 +70,7 @@ impl Identity {
 /// the client's address.
 pub struct Served<'a> {
     pub config: &'a Config,
-    pub identities: &'a [Option<Identity>],
+    pub identities: &'a [Option<Arc<Identity>>],
     pub peer: IpAddr,
     /// How long the handshake may take; `HANDSHAKE_TIMEOUT` but in tests.
     pub timeout: Duration,
@@ -80,7 +80,7 @@ impl<'a> Served<'a> {
     fn find(&self, name: &[u8]) -> Option<(&'a Site, &'a Identity)> {
         let mut sites = self.config.sites.iter().zip(self.identities);
         let (site, identity) = sites.find(|(site, _)| name.eq_ignore_ascii_case(site.name.as_bytes()))?;
-        Some((site, identity.as_ref()?))
+        Some((site, identity.as_deref()?))
     }
 }
 

@@ -11,7 +11,7 @@ use crate::log::Log;
 use crate::tls::conn::{self as tls, Identity, Served, TlsStream};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The most connections served at once.
@@ -37,13 +37,24 @@ pub fn cap_for(limits: &str) -> usize {
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long an accept loop rests after `accept` failed.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
+/// How often the certificate and key files are read again.
+pub const RELOAD_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The certificate and key of each site, in the order of the sites; `None`
+/// for a site served over plain HTTP.
+pub type Identities = Vec<Option<Arc<Identity>>>;
+
+/// What a site's certificate and key files held, if both could be read.
+type Files = Option<(Vec<u8>, Vec<u8>)>;
 
 /// What every connection shares.
 pub struct Server {
     pub config: Config,
-    /// The certificate and key of each site, in the order of the sites;
-    /// `None` for a site served over plain HTTP.
-    pub identities: Vec<Option<Identity>>,
+    /// The identities handshakes use now. A reload puts new ones in place;
+    /// a connection keeps those it started with.
+    identities: RwLock<Arc<Identities>>,
+    /// What each site's certificate and key files held when last read.
+    files: Mutex<Vec<Files>>,
     pub acme: PathBuf,
     pub log: Box<dyn Log + Send>,
     /// Connection slots: how many are taken, the signal that one came back,
@@ -53,6 +64,20 @@ pub struct Server {
     cap: usize,
 }
 
+/// What a site's certificate and key files hold, if both can be read.
+fn read_identity_files(site: &crate::config::Site) -> Files {
+    let (cert, key) = (site.cert.as_ref()?, site.key.as_ref()?);
+    Some((std::fs::read(cert).ok()?, std::fs::read(key).ok()?))
+}
+
+/// Reads the certificates and keys again every `RELOAD_INTERVAL`, for ever.
+pub fn watch(server: &Server) {
+    loop {
+        std::thread::sleep(RELOAD_INTERVAL);
+        server.reload();
+    }
+}
+
 /// One of the server's connection slots. Dropping it gives the slot back.
 pub struct Slot(Arc<Server>);
 
@@ -60,7 +85,55 @@ impl Server {
     pub fn new(
         config: Config, identities: Vec<Option<Identity>>, acme: PathBuf, log: Box<dyn Log + Send>, cap: usize,
     ) -> Arc<Server> {
-        Arc::new(Server { config, identities, acme, log, used: Mutex::new(0), freed: Condvar::new(), cap })
+        let files = config.sites.iter().map(read_identity_files).collect();
+        let identities = RwLock::new(Arc::new(identities.into_iter().map(|i| i.map(Arc::new)).collect()));
+        Arc::new(Server {
+            config,
+            identities,
+            files: Mutex::new(files),
+            acme,
+            log,
+            used: Mutex::new(0),
+            freed: Condvar::new(),
+            cap,
+        })
+    }
+
+    /// The identities in place now.
+    pub fn identities(&self) -> Arc<Identities> {
+        Arc::clone(&self.identities.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Reads each site's certificate and key files again. A site whose
+    /// files changed gets the identity they now hold, once it has passed
+    /// the checks of startup; if it does not, the site keeps the identity
+    /// it had, and the log says why. Connections already open are not
+    /// affected.
+    pub fn reload(&self) {
+        let mut files = self.files.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut identities: Identities = self.identities().as_ref().clone();
+        let mut changed = false;
+        for ((site, seen), identity) in self.config.sites.iter().zip(files.iter_mut()).zip(identities.iter_mut()) {
+            let (Some(cert), Some(key)) = (&site.cert, &site.key) else { continue };
+            let now = read_identity_files(site);
+            if now == *seen {
+                continue;
+            }
+            // A file being replaced may read as neither; once it can be
+            // read, it is looked at again.
+            *seen = now;
+            match Identity::load(cert, key) {
+                Ok(loaded) => {
+                    *identity = Some(Arc::new(loaded));
+                    changed = true;
+                    self.log.error(&format!("site '{}': certificate and key reloaded", site.name));
+                }
+                Err(message) => self.log.error(&format!("site '{}': keeping the certificate it had: {message}", site.name)),
+            }
+        }
+        if changed {
+            *self.identities.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(identities);
+        }
     }
 
     #[cfg(test)]
@@ -112,9 +185,10 @@ fn connection(server: &Server, client: TcpStream, secure: bool) {
         proxy::serve(&client, &context(None));
         return;
     }
+    let identities = server.identities();
     let served = Served {
         config: &server.config,
-        identities: &server.identities,
+        identities: &identities,
         peer: peer.ip(),
         timeout: tls::HANDSHAKE_TIMEOUT,
     };
@@ -193,6 +267,61 @@ mod tests {
         assert_eq!(cap_for(&limits("unlimited")), CONNECTIONS);
         assert_eq!(cap_for(&limits("10")), 1);
         assert_eq!(cap_for(""), CONNECTIONS, "no /proc, as on macOS");
+    }
+
+    /// A log the test can read after the server has taken it.
+    struct Shared(Arc<Kept>);
+    impl Log for Shared {
+        fn access(&self, line: &str) {
+            self.0.access(line);
+        }
+        fn error(&self, line: &str) {
+            self.0.error(line);
+        }
+    }
+
+    /// A renewed certificate is taken up without a restart: reload puts the
+    /// new identity in place for the handshakes that follow, while files
+    /// that do not make a valid identity leave the one before in place.
+    #[test]
+    fn renewed_certificates_are_taken_up() {
+        let dir = std::env::temp_dir().join(format!("shioko-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let certs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs");
+        let put = |chain: &str, key: &str| {
+            std::fs::copy(certs.join(format!("{chain}.chain.pem")), dir.join("chain.pem")).unwrap();
+            std::fs::copy(certs.join(format!("{key}.key")), dir.join("key.pem")).unwrap();
+        };
+        let chain_of = |name: &str| {
+            Identity::load(&certs.join(format!("{name}.chain.pem")), &certs.join(format!("{name}.key"))).unwrap().chain
+        };
+        put("site.test", "site.test");
+        let conf = dir.join("shioko.conf");
+        let text = format!("[site.test]\nupstream = a:1\ncert = {0}/chain.pem\nkey = {0}/key.pem\n", dir.display());
+        std::fs::write(&conf, text).unwrap();
+        let config = crate::config::Config::load(&conf).unwrap();
+        let first = Identity::load(&dir.join("chain.pem"), &dir.join("key.pem")).unwrap();
+        let log = Arc::new(Kept::default());
+        let server = Server::new(config, vec![Some(first)], "/nonexistent".into(), Box::new(Shared(Arc::clone(&log))), 4);
+        let chain = || server.identities()[0].as_ref().unwrap().chain.clone();
+
+        let before = server.identities();
+        server.reload();
+        assert!(Arc::ptr_eq(&before, &server.identities()), "nothing changed, yet the identities were replaced");
+        put("tls.test", "tls.test");
+        server.reload();
+        assert_eq!(chain(), chain_of("tls.test"));
+        assert!(before[0].as_ref().unwrap().chain == chain_of("site.test"), "an open connection's identity changed");
+        // A key that does not belong to the certificate: the site keeps
+        // what it had, and the log says why.
+        put("site.test", "tls.test");
+        server.reload();
+        assert_eq!(chain(), chain_of("tls.test"));
+        assert!(log.0.lock().unwrap().iter().any(|l| l.contains("keeping the certificate it had")), "{:?}", log.0);
+        put("site.test", "site.test");
+        server.reload();
+        assert_eq!(chain(), chain_of("site.test"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Starts a server for `sites` on a free port and returns its address.

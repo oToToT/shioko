@@ -2,8 +2,9 @@
 # certbot deploy hook: runs after every certificate certbot obtains or
 # renews, with RENEWED_LINEAGE set to its directory under
 # /etc/letsencrypt/live. It lets the shioko group read that certificate and
-# key, then restarts shioko if it is running: it reads them only at
-# startup.
+# key. shioko reads its certificates again every minute and uses changed
+# ones for new connections, so nothing is restarted and no connection is
+# cut.
 #
 # Access is granted with ACLs, so the owners, groups and modes certbot and
 # other services rely on stay as they are.
@@ -17,7 +18,3 @@ archive=/etc/letsencrypt/archive/$(basename "$lineage")
 # Pass through the two parent directories, read the certificate's own.
 setfacl -m g:shioko:x /etc/letsencrypt/live /etc/letsencrypt/archive
 setfacl -R -m g:shioko:rX "$lineage" "$archive"
-if ! systemctl try-restart shioko; then
-    echo "shioko did not restart: see journalctl -u shioko" >&2
-    exit 1
-fi
