@@ -3,7 +3,8 @@
 # build, as deployed) and nginx serving the same sites in front of real
 # Vaultwarden and Jellyfin and a test upstream, and Pebble issuing a
 # certificate to certbot through shioko's port 80. Then the checks
-# (ci/e2e/e2e.py check), the comparison with nginx (parity), on request the
+# (ci/e2e/e2e.py check), the comparison with nginx (parity), latency and
+# throughput next to nginx (latency.py, not in a record build), on request the
 # soak runs, sampling shioko's memory, threads and file descriptors, and
 # last a stop with SIGTERM while requests are open (e2e.py drain).
 #
@@ -14,8 +15,8 @@
 #                                 TLC checks the run against spec/Server.tla
 #
 # Everything found goes to target/e2e/: checks.json, parity.json,
-# soak.json, resources.csv, drain.json, certbot.log, shioko.log,
-# shioko.record.
+# latency.json, soak.json, resources.csv, drain.json, certbot.log,
+# shioko.log, shioko.record.
 set -eu
 cd "$(dirname "$0")/.."
 mode=${1:-}
@@ -52,6 +53,12 @@ echo "== checks"
 $compose run --rm client python3 e2e.py check || failed=1
 echo "== parity with nginx"
 $compose run --rm client python3 e2e.py parity
+
+# A record build logs every step, which is not what is measured here.
+if [ "$mode" != record ]; then
+    echo "== latency and throughput, next to nginx"
+    $compose run --rm client python3 latency.py || failed=1
+fi
 
 if [ "$mode" = soak ] || [ "$mode" = record ]; then
     echo "== soak"
