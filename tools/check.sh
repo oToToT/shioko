@@ -1,7 +1,8 @@
 #!/bin/sh
 # Every check a change must pass. Runs on a developer machine and, through
 # tools/ci.sh, inside Linux containers. Needs no network once the crates of
-# Cargo.lock are downloaded (cargo fetch --locked).
+# Cargo.lock and shuttle/Cargo.lock are downloaded (cargo fetch --locked in
+# each).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -21,6 +22,12 @@ cargo clippy --locked --all-targets --features keylog,record -- -D warnings
 echo "== test"
 # shellcheck disable=SC2086
 cargo test --locked $test_target
+
+echo "== the threads' shared state under thousands of schedules (shuttle/)"
+# The library built again with shuttle's locks (src/sync.rs); only the
+# tests of src/interleavings.rs run there. SHUTTLE_ITERATIONS and
+# SHUTTLE_SEED choose how many schedules and which.
+(cd shuttle && cargo clippy --locked --lib --tests -- -D warnings && cargo test --locked --lib interleavings)
 
 echo "== release build, both deployment targets"
 cargo build --release --locked \

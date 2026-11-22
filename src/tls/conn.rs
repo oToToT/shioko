@@ -27,11 +27,11 @@ use crate::log::Log;
 use crate::net;
 use crate::pem;
 use crate::stream::{Buffer, Stream};
+use crate::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::io;
 use std::net::IpAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// How long a handshake may take, from the first byte to the client
@@ -218,7 +218,7 @@ fn keylog(random: &[u8; 32], shared: &[u8]) {
 #[cfg(any(test, feature = "keylog"))]
 fn keylog_to(path: &std::ffi::OsStr, random: &[u8; 32], shared: &[u8]) {
     use std::io::Write;
-    static WRITING: Mutex<()> = Mutex::new(());
+    static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let line = format!("{} {}\n", hex(random), hex(shared));
     let _writing = WRITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

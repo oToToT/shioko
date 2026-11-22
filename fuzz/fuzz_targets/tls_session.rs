@@ -6,7 +6,7 @@
 use libfuzzer_sys::fuzz_target;
 use shioko::http::proxy;
 use shioko::tls::conn::{Served, TlsStream};
-use shioko_fuzz::peer::Peer;
+use shioko::tls::peer::Peer;
 use shioko_fuzz::{Quiet, Upstream, config, context, identities, piece_and_rest, two_parts};
 use std::time::Duration;
 

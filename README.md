@@ -225,7 +225,8 @@ The complete lists are at the end of sections 5 and 6 of `SPEC.md`.
 
 ```
 nix develop            # TLC, OpenSSL, curl
-tools/check.sh         # lint, tests, release builds for both targets
+tools/check.sh         # lint, tests, the threads under thousands of
+                       # schedules (shuttle/), release builds for both targets
 tools/spec.sh          # model-check the specs, check the RFC lists
 tools/prove.sh         # Kani proofs
 tools/interop.sh       # a real shioko against OpenSSL and curl

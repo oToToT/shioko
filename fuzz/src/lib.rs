@@ -2,8 +2,6 @@
 //! upstream that answers from them, a log that keeps nothing, and the
 //! configuration and certificate the connections are served with.
 
-pub mod peer;
-
 use shioko::config::Config;
 use shioko::http::proxy::{Connect, Context, Timeouts};
 use shioko::log::Log;

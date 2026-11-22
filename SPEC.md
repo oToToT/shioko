@@ -241,7 +241,13 @@ src/
   tls/conn.rs      the connection: handshake driver, reading and writing
                    threads, the three locks
   tls/client.rs    a TLS client for tests, and tls/tests.rs the tests
+  tls/peer.rs      a client for the fuzz targets and the schedule tests:
+                   a real handshake, then records of their choosing
   stream.rs        the stream trait, the read buffer, CRLF lines
+  sync.rs          the locks and threads connections share: std's, or
+                   shuttle's in the build of shuttle/
+  interleavings.rs the shared state under thousands of thread schedules
+                   (shuttle/ only)
   server.rs        listeners, accept loop, connection cap
   http/parse.rs    request and response heads, fields, chunk sizes, Host
   http/body.rs     copying bodies: stated length, chunked, until close
@@ -260,6 +266,9 @@ tests/             vectors, transition tables, test certificates, the
 deploy/            systemd unit, certbot deploy hook, the deployment guide
 ci/                the Docker images of the checks, the end-to-end environment
 fuzz/              the fuzz targets (a workspace of its own) and their seeds
+shuttle/           src/ built again with shuttle's locks, for the schedule
+                   tests (a workspace of its own, so shuttle stays out of
+                   Cargo.lock)
 tools/             the scripts that run the checks
 patches/           our stand-in for libcrux's CPU detection
 ```
@@ -616,6 +625,7 @@ Each tool is used where it is strongest:
 | What | Tool | Checks the code itself? |
 |---|---|---|
 | Threads and locks: the TLS write lock, the connection cap, the two tunnel threads | TLA+ (`Handshake.tla`, `Server.tla`), and TLC on recorded runs of the real server | yes, for the runs recorded: every tlsfuzzer connection against `Handshake.tla`, a whole end-to-end run against `Server.tla` |
+| The same threads in the real code: a tunnel's two pumps over one TlsStream (data both ways, a KeyUpdate) | shuttle (`src/interleavings.rs`): the real code with shuttle's locks, run under 600 schedules of each test in CI (PCT, which finds a bug of a few steps with known probability, and random), any number locally; a deadlock is a failure | yes, for the schedules tried |
 | The two state machines (TLS handshake, HTTP exchange) and the framing rules | TLA+, then the Rust function compared with the spec on every input | yes, on every input |
 | Parsers: request and status lines, fields, sizes, Host | Kani proofs and unit tests | yes, for every input up to a size |
 | Buffers and copying: which bytes go where, where a message ends | tests of the real proxy over scripted streams, every way the reads can fall | yes, for the runs the tests make |
@@ -623,7 +633,7 @@ Each tool is used where it is strongest:
 | Key schedule | the two handshake traces of RFC 8448, every intermediate secret | yes, for the traces |
 | Crypto primitives | RFC and Wycheproof vectors | yes, for the vectors |
 | Every parser, against malformed input | Kani proofs, mutation tests (hundreds of thousands of corrupted inputs per parser), and coverage-guided fuzzing (`fuzz/`) | yes, for the inputs tried |
-| Whole connections, plain and TLS, against anything a client or an upstream may send | coverage-guided fuzzing of `proxy::serve` and `TlsStream::accept` over streams of the fuzzer's bytes, cut in pieces of any size; and past the handshake, a client in the harness (`fuzz/src/peer.rs`) that does a real handshake, then seals the fuzzer's records under its keys, and checks that every record the server sends opens under the server's keys, holds at most 16 KB, and that none follows an alert | yes, for the inputs tried |
+| Whole connections, plain and TLS, against anything a client or an upstream may send | coverage-guided fuzzing of `proxy::serve` and `TlsStream::accept` over streams of the fuzzer's bytes, cut in pieces of any size; and past the handshake, a client in the harness (`src/tls/peer.rs`) that does a real handshake, then seals the fuzzer's records under its keys, and checks that every record the server sends opens under the server's keys, holds at most 16 KB, and that none follows an alert | yes, for the inputs tried |
 
 The byte-level properties were first modelled in TLA+ as well; that model
 checked a description of sequential code rather than the code, so it was

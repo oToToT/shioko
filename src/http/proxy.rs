@@ -13,10 +13,10 @@ use crate::config::{Config, Site};
 use crate::log::{self, Log};
 use crate::net;
 use crate::stream::{self, Buffer, Stream};
+use crate::sync::{self, atomic::AtomicU64, atomic::Ordering};
 use std::collections::VecDeque;
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long the client may take over a request head, and over a pause in
@@ -698,8 +698,8 @@ fn tunnel<C: Stream, K: Connect>(
     let me = crate::record::who();
     #[cfg(feature = "record")]
     crate::record::be(me.clone(), true);
-    std::thread::scope(|scope| {
-        let down = std::thread::Builder::new().spawn_scoped(scope, || {
+    sync::thread::scope(|scope| {
+        let down = sync::spawn_scoped(scope, || {
             #[cfg(feature = "record")]
             crate::record::be(me.replace(" up", " down"), true);
             pump(upstream, client, started, &last);

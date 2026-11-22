@@ -16,8 +16,8 @@ use crate::tls::conn::{self as tls, Identity, Served, TlsStream};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
+use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The most connections served at once from each pool.
@@ -246,7 +246,7 @@ impl Server {
 
     /// The slots, which are left consistent at every step, so a lock
     /// poisoned by a panic elsewhere can still be used.
-    fn slots(&self) -> std::sync::MutexGuard<'_, Slots> {
+    fn slots(&self) -> MutexGuard<'_, Slots> {
         self.slots.lock().unwrap_or_else(PoisonError::into_inner)
     }
 

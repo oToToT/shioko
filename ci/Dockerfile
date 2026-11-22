@@ -10,8 +10,9 @@ COPY rust-toolchain.toml .
 RUN rustup toolchain install
 
 COPY . .
-# The crates of Cargo.lock, checked against its checksums; the network is
-# used here and nowhere after.
-RUN cargo fetch --locked
+# The crates of Cargo.lock and shuttle/Cargo.lock (shioko's, and those of
+# the schedule tests), checked against their checksums; the network is used
+# here and nowhere after.
+RUN cargo fetch --locked && cd shuttle && cargo fetch --locked
 ENV CARGO_NET_OFFLINE=true
 RUN --network=none tools/check.sh

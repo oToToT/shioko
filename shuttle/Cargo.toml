@@ -1,0 +1,39 @@
+# The library of ../src built again with shuttle's locks and threads in
+# place of std's (src/sync.rs), for the tests of src/interleavings.rs:
+# tools/shuttle.sh. A package of its own, with its own Cargo.lock, so that
+# shuttle stays out of shioko's.
+[package]
+name = "shioko-shuttle"
+version = "0.0.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "shioko"
+path = "../src/lib.rs"
+
+[dependencies]
+libcrux-sha2 = "=0.0.10"
+libcrux-chacha20poly1305 = "=0.0.11"
+libcrux-curve25519 = "=0.0.10"
+libcrux-p256 = { version = "=0.0.10", features = ["expose-hacl"] }
+libcrux-ecdsa = { version = "=0.0.10", default-features = false }
+libcrux-ml-kem = { version = "=0.0.12", default-features = false, features = ["mlkem768"] }
+shuttle = "=0.9.10"
+
+[features]
+keylog = []
+record = []
+
+[patch.crates-io]
+libcrux-platform = { path = "../patches/libcrux-platform" }
+
+[profile.test]
+opt-level = 2
+
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(shuttle)'] }
+
+[workspace]

@@ -51,8 +51,10 @@ strip = true
 # Denied everywhere but in the few functions that allow it by name and say
 # why each block is sound (SPEC.md section 4).
 unsafe_code = "deny"
-# `cfg(kani)` marks the proofs that tools/prove.sh checks with Kani.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+# `cfg(kani)` marks the proofs that tools/prove.sh checks with Kani;
+# `cfg(fuzzing)` is set in the fuzz targets' build (fuzz/), `cfg(shuttle)`
+# in the build of shuttle/ (src/sync.rs).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(shuttle)'] }
 
 [lints.clippy]
 undocumented_unsafe_blocks = "deny"

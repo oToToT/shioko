@@ -1,20 +1,22 @@
-//! A TLS client that gets the server under test through a real handshake,
-//! then sends the records the fuzzer chose, sealed under its keys, so that
-//! the fuzzer reaches what comes after the handshake: records, key updates,
-//! alerts, and HTTP over TLS. It also checks what the server sends back.
+//! A TLS client, as the transport of a TlsStream under test, for the fuzz
+//! targets (fuzz/) and the tests of interleavings (src/interleavings.rs):
+//! it gets the server through a real handshake, then sends records of the
+//! test's choosing sealed under its keys, so that what comes after the
+//! handshake can be reached: records, key updates, alerts, HTTP over TLS.
+//! It also checks what the server sends back.
 //!
 //! It runs in the thread that reads: the server reads our ClientHello,
 //! writes its flight, and when it reads again we take the flight from what
-//! it wrote and answer with our Finished and the fuzzer's records.
+//! it wrote and answer with our Finished and the planned records.
 
-use shioko::crypto;
-use shioko::stream::Stream;
-use shioko::tls::keys::{self, Secret, TrafficKeys, Transcript};
-use shioko::tls::msgs;
-use shioko::tls::record::{self, Opened, Record};
-use shioko::tls::wire::Reader;
+use super::keys::{self, Secret, TrafficKeys, Transcript};
+use super::msgs;
+use super::record::{self, Opened, Record};
+use super::wire::Reader;
+use crate::crypto;
+use crate::stream::Stream;
+use crate::sync::{Arc, Condvar, Mutex};
 use std::io;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const SECRET: [u8; 32] = [0x42; 32];
@@ -27,9 +29,14 @@ pub const RAW: u8 = 0xff;
 /// A handle on the client; clones share it, so that the test can check
 /// what the server sent after the server is done with its stream.
 #[derive(Clone)]
-pub struct Peer(Arc<Mutex<State>>);
+pub struct Peer(Arc<(Mutex<State>, Condvar)>);
 
 struct State {
+    /// Once its records are read, the connection stays open (a read waits)
+    /// until the server shuts it down; otherwise it ends there.
+    held: bool,
+    /// The server shut the connection down: reads end, writes fail.
+    shut: bool,
     input: Vec<u8>,
     at: usize,
     piece: usize,
@@ -44,12 +51,24 @@ struct State {
 
 impl Peer {
     /// A client that will send `records` once the handshake is done, the
-    /// server's reads getting at most `piece` bytes each.
+    /// server's reads getting at most `piece` bytes each, and then end.
     pub fn new(records: Vec<(u8, Vec<u8>)>, piece: usize) -> Peer {
+        Peer::with(records, piece, false)
+    }
+
+    /// The same, but it then keeps the connection open until the server
+    /// shuts it down.
+    pub fn held(records: Vec<(u8, Vec<u8>)>, piece: usize) -> Peer {
+        Peer::with(records, piece, true)
+    }
+
+    fn with(records: Vec<(u8, Vec<u8>)>, piece: usize, held: bool) -> Peer {
         let hello = client_hello(&crypto::x25519_public(&SECRET));
         let mut transcript = Transcript::default();
         transcript.add(&hello);
-        Peer(Arc::new(Mutex::new(State {
+        Peer(Arc::new((Mutex::new(State {
+            held,
+            shut: false,
             input: record::plain(record::HANDSHAKE, &hello),
             at: 0,
             piece: piece.max(1),
@@ -57,7 +76,11 @@ impl Peer {
             transcript,
             planned: records,
             reading: None,
-        })))
+        }), Condvar::new())))
+    }
+
+    fn state(&self) -> crate::sync::MutexGuard<'_, State> {
+        self.0.0.lock().unwrap()
     }
 
     /// The fuzzer's part of the input: records, each a content type, a
@@ -76,15 +99,17 @@ impl Peer {
 
     /// What the server sent after the handshake: every record must open
     /// under its keys in turn (following its KeyUpdates), hold at most
-    /// 16 KB, and none may come after an alert.
-    pub fn check(&self) {
-        let state = self.0.lock().unwrap();
-        let Some((secret, from)) = state.reading else { return };
+    /// 16 KB, and none may come after an alert. Returns the application
+    /// data, and the alert the server ended with, if it did.
+    pub fn check(&self) -> (Vec<u8>, Option<u8>) {
+        let state = self.state();
+        let mut data = Vec::new();
+        let mut alert = None;
+        let Some((secret, from)) = state.reading else { return (data, alert) };
         let mut keys = Keys::new(secret);
-        let mut alerted = false;
         let mut partial = Vec::new();
         for record in split(&state.output[from..]).expect("the server's records are whole") {
-            assert!(!alerted, "the server sent a record after an alert");
+            assert!(alert.is_none(), "the server sent a record after an alert");
             assert_eq!(record.content_type, record::APPLICATION_DATA, "a record not protected after the handshake");
             let Opened::Content(content_type, content) = record::open(&keys.keys, keys.sequence, &record) else {
                 panic!("a record of the server's does not open under its keys");
@@ -92,7 +117,7 @@ impl Peer {
             keys.sequence += 1;
             assert!(content.len() <= record::MAX_PLAINTEXT, "a record of {} bytes", content.len());
             match content_type {
-                record::ALERT => alerted = true,
+                record::ALERT => alert = Some(*content.get(1).unwrap_or(&255)),
                 record::HANDSHAKE => {
                     partial.extend(content);
                     for message in messages(&mut partial) {
@@ -100,17 +125,22 @@ impl Peer {
                         keys.next();
                     }
                 }
-                other => assert_eq!(other, record::APPLICATION_DATA, "the server sent content type {other}"),
+                record::APPLICATION_DATA => data.extend(content),
+                other => panic!("the server sent content type {other}"),
             }
         }
+        (data, alert)
     }
 }
 
 impl Stream for Peer {
     fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.state();
         if state.at == state.input.len() && state.reading.is_none() {
             state.answer_flight();
+        }
+        while state.held && !state.shut && state.at == state.input.len() {
+            state = self.0.1.wait(state).unwrap();
         }
         let State { input, at, piece, .. } = &mut *state;
         let n = buf.len().min(*piece).min(input.len() - *at);
@@ -120,7 +150,10 @@ impl Stream for Peer {
     }
 
     fn write_all(&self, buf: &[u8]) -> io::Result<()> {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.state();
+        if state.shut {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         if state.output.len() + buf.len() > OUTPUT_LIMIT {
             return Err(io::ErrorKind::WriteZero.into());
         }
@@ -129,8 +162,15 @@ impl Stream for Peer {
     }
 
     fn set_read_timeout(&self, _: Duration) {}
-    fn shutdown(&self) {}
-    fn finish(&self) {}
+
+    fn shutdown(&self) {
+        self.state().shut = true;
+        self.0.1.notify_all();
+    }
+
+    fn finish(&self) {
+        self.shutdown();
+    }
 }
 
 impl State {
