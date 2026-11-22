@@ -5,7 +5,7 @@
 //! the body are left for whoever reads next.
 
 use super::parse::{self, FieldsError, HEAD_LIMIT};
-use crate::stream::{Buffer, LineError, Stream};
+use crate::stream::{self, Buffer, LineError, Stream};
 
 /// The longest chunk-size line we read, extensions included.
 const CHUNK_LINE_LIMIT: usize = 4096;
@@ -30,6 +30,17 @@ fn source_failed(buffer: &Buffer) -> CopyError {
     if buffer.timed_out() { CopyError::SourceTimeout } else { CopyError::Source }
 }
 
+/// `Buffer::read`, failing as a copy fails. `Ok(0)` is the end of the source.
+fn read(buffer: &mut Buffer, from: &impl Stream, space: &mut [u8]) -> Result<usize, CopyError> {
+    buffer.read(from, space).map_err(|error| {
+        if stream::timed_out(&error) { CopyError::SourceTimeout } else { CopyError::Source }
+    })
+}
+
+fn write(to: &impl Stream, bytes: &[u8]) -> Result<(), CopyError> {
+    to.write_all(bytes).map_err(|_| CopyError::Sink)
+}
+
 /// Copies exactly `length` bytes.
 pub fn copy_length(
     buffer: &mut Buffer,
@@ -41,24 +52,21 @@ pub fn copy_length(
     while length > 0 {
         let want = usize::try_from(length).unwrap_or(COPY_SIZE).min(COPY_SIZE);
         let piece = space.get_mut(..want).unwrap_or(&mut []);
-        let n = match buffer.read(from, piece) {
-            Ok(n) if n > 0 => n,
-            Ok(_) => return Err(CopyError::Source),
-            Err(error) if crate::stream::timed_out(&error) => return Err(CopyError::SourceTimeout),
-            Err(_) => return Err(CopyError::Source),
-        };
-        to.write_all(piece.get(..n).unwrap_or(&[])).map_err(|_| CopyError::Sink)?;
+        let n = read(buffer, from, piece)?;
+        if n == 0 {
+            return Err(CopyError::Source);
+        }
+        write(to, piece.get(..n).unwrap_or(&[]))?;
         length = length.saturating_sub(u64::try_from(n).unwrap_or(u64::MAX));
     }
     Ok(())
 }
 
 fn line(buffer: &mut Buffer, from: &impl Stream, limit: usize) -> Result<Vec<u8>, CopyError> {
-    match buffer.line(from, limit) {
-        Ok(line) => Ok(line),
-        Err(LineError::End | LineError::Cut) => Err(source_failed(buffer)),
-        Err(LineError::TooLong | LineError::Bare) => Err(CopyError::Malformed),
-    }
+    buffer.line(from, limit).map_err(|error| match error {
+        LineError::End | LineError::Cut => source_failed(buffer),
+        LineError::TooLong | LineError::Bare => CopyError::Malformed,
+    })
 }
 
 /// Copies a chunked body of at most `limit` bytes. With `rechunk` the body
@@ -79,29 +87,22 @@ pub fn copy_chunked(
         let size_line = line(buffer, from, CHUNK_LINE_LIMIT)?;
         let size = parse::chunk_size(&size_line).ok_or(CopyError::Malformed)?;
         if size == 0 {
-            match parse::read_fields(buffer, from, HEAD_LIMIT) {
-                Ok(_) => {}
-                Err(FieldsError::Gone) => return Err(source_failed(buffer)),
-                Err(_) => return Err(CopyError::Malformed),
-            }
-            if rechunk {
-                to.write_all(b"0\r\n\r\n").map_err(|_| CopyError::Sink)?;
-            }
-            return Ok(());
+            parse::read_fields(buffer, from, HEAD_LIMIT).map_err(|error| match error {
+                FieldsError::Gone => source_failed(buffer),
+                _ => CopyError::Malformed,
+            })?;
+            return if rechunk { write(to, b"0\r\n\r\n") } else { Ok(()) };
         }
-        total = total.checked_add(size).ok_or(CopyError::TooLarge)?;
-        if total > limit {
-            return Err(CopyError::TooLarge);
-        }
+        total = total.checked_add(size).filter(|&total| total <= limit).ok_or(CopyError::TooLarge)?;
         if rechunk {
-            to.write_all(format!("{size:x}\r\n").as_bytes()).map_err(|_| CopyError::Sink)?;
+            write(to, format!("{size:x}\r\n").as_bytes())?;
         }
         copy_length(buffer, from, to, size)?;
         if !line(buffer, from, 0)?.is_empty() {
             return Err(CopyError::Malformed);
         }
         if rechunk {
-            to.write_all(b"\r\n").map_err(|_| CopyError::Sink)?;
+            write(to, b"\r\n")?;
         }
     }
 }
@@ -116,22 +117,17 @@ pub fn copy_to_end(
 ) -> Result<(), CopyError> {
     let mut space = vec![0u8; COPY_SIZE];
     loop {
-        let n = match buffer.read(from, &mut space) {
-            Ok(n) => n,
-            Err(error) if crate::stream::timed_out(&error) => return Err(CopyError::SourceTimeout),
-            Err(_) => return Err(CopyError::Source),
-        };
+        let n = read(buffer, from, &mut space)?;
         let piece = space.get(..n).unwrap_or(&[]);
-        let sent = if !rechunk {
-            to.write_all(piece)
+        if !rechunk {
+            write(to, piece)?;
         } else if n == 0 {
-            to.write_all(b"0\r\n\r\n")
+            write(to, b"0\r\n\r\n")?;
         } else {
-            to.write_all(format!("{n:x}\r\n").as_bytes())
-                .and_then(|()| to.write_all(piece))
-                .and_then(|()| to.write_all(b"\r\n"))
-        };
-        sent.map_err(|_| CopyError::Sink)?;
+            write(to, format!("{n:x}\r\n").as_bytes())?;
+            write(to, piece)?;
+            write(to, b"\r\n")?;
+        }
         if n == 0 {
             return Ok(());
         }

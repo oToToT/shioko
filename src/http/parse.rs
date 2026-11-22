@@ -18,23 +18,20 @@ pub const METHOD_LIMIT: usize = 32;
 /// The most empty lines we skip before a request line.
 const EMPTY_LINES: usize = 4;
 
-fn is_tchar(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric()
-        || matches!(
-            byte,
-            b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_'
-                | b'`' | b'|' | b'~'
-        )
-}
-
 /// A token as RFC 9110 defines it: one or more of the characters allowed in
-/// method and field names.
+/// method and field names (`tchar`).
 pub fn is_token(bytes: &[u8]) -> bool {
-    !bytes.is_empty() && bytes.iter().all(|&b| is_tchar(b))
+    !bytes.is_empty() && bytes.iter().all(|&b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
 fn is_visible(byte: u8) -> bool {
     (0x21..=0x7e).contains(&byte)
+}
+
+/// What a field value, reason phrase, quoted string or chunk extension may
+/// hold: visible characters, spaces, tabs and bytes above ASCII.
+fn is_text(byte: u8) -> bool {
+    byte == b'\t' || byte == b' ' || is_visible(byte) || byte >= 0x80
 }
 
 /// Removes spaces and tabs from both ends.
@@ -108,15 +105,8 @@ pub fn status_line(line: &[u8]) -> Option<StatusLine<'_>> {
         [b' ', text @ ..] => text,
         _ => return None,
     };
-    let mut status = 0u16;
-    for digit in digits {
-        if !digit.is_ascii_digit() {
-            return None;
-        }
-        status = status.checked_mul(10)?.checked_add(u16::from(digit.wrapping_sub(b'0')))?;
-    }
-    let reason_ok = reason.iter().all(|&b| b == b'\t' || b == b' ' || is_visible(b) || b >= 0x80);
-    ((100..=599).contains(&status) && reason_ok)
+    let status = u16::try_from(decimal(digits)?).ok()?;
+    ((100..=599).contains(&status) && reason.iter().all(|&b| is_text(b)))
         .then_some(StatusLine { version: version(protocol)?, status, reason })
 }
 
@@ -127,20 +117,18 @@ pub fn field_line(line: &[u8]) -> Option<(&[u8], &[u8])> {
     let colon = line.iter().position(|&b| b == b':')?;
     let (name, rest) = line.split_at_checked(colon)?;
     let value = trim(rest.get(1..)?);
-    let value_ok = value.iter().all(|&b| b == b'\t' || b == b' ' || is_visible(b) || b >= 0x80);
-    (is_token(name) && value_ok).then_some((name, value))
+    (is_token(name) && value.iter().all(|&b| is_text(b))).then_some((name, value))
 }
 
 /// A quoted string: visible characters, spaces and tabs between double
 /// quotes, with backslash escapes.
 fn is_quoted(bytes: &[u8]) -> bool {
-    let Some([b'"', inner @ .., b'"']) = Some(bytes) else {
+    let [b'"', inner @ .., b'"'] = bytes else {
         return false;
     };
     let mut escaped = false;
     for &byte in inner {
-        let fine = byte == b'\t' || byte == b' ' || is_visible(byte) || byte >= 0x80;
-        if !fine || (byte == b'"' && !escaped) {
+        if !is_text(byte) || (byte == b'"' && !escaped) {
             return false;
         }
         escaped = byte == b'\\' && !escaped;
@@ -148,59 +136,34 @@ fn is_quoted(bytes: &[u8]) -> bool {
     !escaped
 }
 
-/// A decimal number that fits a `u64`, and nothing else. Leading zeros are
-/// allowed, any number of them.
+/// The number one or more digits in base `radix` spell, if it fits a `u64`.
+/// Leading zeros are allowed, any number of them.
+fn number(digits: &[u8], radix: u32) -> Option<u64> {
+    if digits.is_empty() {
+        return None;
+    }
+    digits.iter().try_fold(0u64, |number, &byte| {
+        number.checked_mul(u64::from(radix))?.checked_add(u64::from(char::from(byte).to_digit(radix)?))
+    })
+}
+
+/// A decimal number that fits a `u64`, and nothing else.
 pub fn decimal(bytes: &[u8]) -> Option<u64> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let zeros = bytes.iter().take_while(|&&b| b == b'0').count();
-    let significant = bytes.get(zeros..)?;
-    // Twenty digits are the most a u64 can have.
-    if significant.len() > 20 {
-        return None;
-    }
-    let mut number = 0u64;
-    for byte in significant {
-        if !byte.is_ascii_digit() {
-            return None;
-        }
-        number = number.checked_mul(10)?.checked_add(u64::from(byte.wrapping_sub(b'0')))?;
-    }
-    Some(number)
+    number(bytes, 10)
 }
 
 /// The size at the start of a chunk: hexadecimal digits, then nothing or a
 /// chunk extension, which is ignored. Spaces and tabs may come before the
 /// `;` of an extension, but not at the end of a line without one.
 pub fn chunk_size(line: &[u8]) -> Option<u64> {
-    let count = line.iter().take_while(|b| b.is_ascii_hexdigit()).count();
-    let digits = line.get(..count)?;
-    let zeros = digits.iter().take_while(|&&b| b == b'0').count();
-    // Sixteen digits are the most a u64 can have.
-    if count == 0 || count.saturating_sub(zeros) > 16 {
-        return None;
-    }
-    let mut size = 0u64;
-    for &byte in digits {
-        let digit = char::from(byte).to_digit(16)?;
-        size = size.checked_mul(16)?.checked_add(u64::from(digit))?;
-    }
-    let rest = line.get(count..)?;
+    let (digits, rest) = line.split_at_checked(line.iter().take_while(|b| b.is_ascii_hexdigit()).count())?;
+    let size = number(digits, 16)?;
     let extension = rest.iter().position(|&b| b != b' ' && b != b'\t').and_then(|at| rest.get(at..));
     match extension {
         None if rest.is_empty() => Some(size),
-        Some([b';', more @ ..]) => {
-            more.iter().all(|&b| b == b'\t' || b == b' ' || is_visible(b) || b >= 0x80).then_some(size)
-        }
+        Some([b';', more @ ..]) if more.iter().all(|&b| is_text(b)) => Some(size),
         _ => None,
     }
-}
-
-/// A character a host name may hold as it stands (RFC 3986 `reg-name`:
-/// unreserved and sub-delims; `%` is checked separately).
-fn is_name_char(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=')
 }
 
 /// What the `Host` field names, without the port: a host name (`reg-name`),
@@ -219,10 +182,11 @@ pub fn host(value: &[u8]) -> Option<&[u8]> {
         let (name, rest) = value.split_at_checked(end)?;
         let mut bytes = name.iter();
         while let Some(&byte) = bytes.next() {
+            // RFC 3986 `reg-name`: unreserved, sub-delims and percent escapes.
             let ok = if byte == b'%' {
                 bytes.next().is_some_and(u8::is_ascii_hexdigit) && bytes.next().is_some_and(u8::is_ascii_hexdigit)
             } else {
-                is_name_char(byte)
+                byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=".contains(&byte)
             };
             if !ok {
                 return None;
@@ -254,10 +218,7 @@ impl Fields {
     /// The value of the field with this name, if there is exactly one.
     pub fn one<'a>(&'a self, name: &'a str) -> Option<&'a [u8]> {
         let mut values = self.all(name);
-        match (values.next(), values.next()) {
-            (Some(value), None) => Some(value),
-            _ => None,
-        }
+        values.next().filter(|_| values.next().is_none())
     }
 
     /// The elements of a field whose value is a comma-separated list, over
@@ -270,16 +231,17 @@ impl Fields {
             .collect()
     }
 
+    /// Whether that list holds this element, given in lower case.
+    pub fn has(&self, name: &str, element: &str) -> bool {
+        self.list(name).iter().any(|e| e == element.as_bytes())
+    }
+
     /// What the head says about `Content-Length`, and the length if it is
     /// clear.
     pub fn length(&self) -> (Length, u64) {
-        let mut values = self.all("content-length");
-        match (values.next(), values.next()) {
+        match (self.all("content-length").next(), self.one("content-length").and_then(decimal)) {
             (None, _) => (Length::None, 0),
-            (Some(value), None) => match decimal(value) {
-                Some(length) => (Length::One, length),
-                None => (Length::Bad, 0),
-            },
+            (_, Some(length)) => (Length::One, length),
             _ => (Length::Bad, 0),
         }
     }
@@ -296,19 +258,15 @@ impl Fields {
         for element in values.flat_map(|value| value.split(|&b| b == b',')) {
             let mut parts = element.split(|&b| b == b';');
             let name = trim(parts.next().unwrap_or(&[]));
-            let mut parameters = 0usize;
-            for parameter in parts {
+            let parameters_ok = parts.all(|parameter| {
                 let mut sides = parameter.splitn(2, |&b| b == b'=');
                 let (key, value) = (trim(sides.next().unwrap_or(&[])), trim(sides.next().unwrap_or(&[])));
-                if !is_token(key) || !(is_token(value) || is_quoted(value)) {
-                    return Coding::Bad;
-                }
-                parameters = parameters.saturating_add(1);
-            }
+                is_token(key) && (is_token(value) || is_quoted(value))
+            });
             let chunked = name.eq_ignore_ascii_case(b"chunked");
             // "chunked" may come once, without parameters, and nothing may
             // follow it.
-            if !is_token(name) || last_is_chunked || (chunked && parameters > 0) {
+            if !is_token(name) || !parameters_ok || last_is_chunked || (chunked && element.contains(&b';')) {
                 return Coding::Bad;
             }
             last_is_chunked = chunked;
@@ -422,17 +380,13 @@ pub struct Response {
 /// client gets instead: 504 if the upstream was too slow, 502 otherwise.
 pub fn read_response(buffer: &mut Buffer, stream: &impl Stream) -> Result<Response, u16> {
     let failed = |buffer: &Buffer| if buffer.timed_out() { 504u16 } else { 502u16 };
-    let line = match buffer.line(stream, LINE_LIMIT) {
-        Ok(line) => line,
-        Err(_) => return Err(failed(buffer)),
-    };
+    let line = buffer.line(stream, LINE_LIMIT).map_err(|_| failed(buffer))?;
     let StatusLine { version, status, reason } = status_line(&line).ok_or(502u16)?;
     let room = HEAD_LIMIT.saturating_sub(line.len());
-    let fields = match read_fields(buffer, stream, room) {
-        Ok(fields) => fields,
-        Err(FieldsError::Gone) => return Err(failed(buffer)),
-        Err(_) => return Err(502),
-    };
+    let fields = read_fields(buffer, stream, room).map_err(|error| match error {
+        FieldsError::Gone => failed(buffer),
+        _ => 502,
+    })?;
     Ok(Response { version, status, reason: reason.to_vec(), fields })
 }
 

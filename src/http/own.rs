@@ -77,31 +77,29 @@ pub fn http_date(unix: u64) -> String {
 }
 
 /// What an own response carries besides its status.
-pub enum Content<'a> {
+pub enum Content {
     /// The status and its name, as one line of text.
     Text,
     /// A redirect to this location.
-    Redirect(&'a str),
+    Redirect(String),
     /// An ACME token.
-    Token(&'a [u8]),
+    Token(Vec<u8>),
 }
 
 /// The bytes of an own response. `head_only`: the request was HEAD, so the
 /// body is left out and only its length is stated.
-pub fn response(status: u16, content: &Content<'_>, now: u64, head_only: bool) -> Vec<u8> {
-    let text = format!("{status} {}\n", reason(status));
-    let (kind, body): (&str, &[u8]) = match content {
-        Content::Token(token) => ("application/octet-stream", token),
+pub fn response(status: u16, content: &Content, now: u64, head_only: bool) -> Vec<u8> {
+    let reason = reason(status);
+    let text = format!("{status} {reason}\n");
+    let (kind, body) = match content {
+        Content::Token(token) => ("application/octet-stream", token.as_slice()),
         _ => ("text/plain", text.as_bytes()),
     };
-    let mut head = format!("HTTP/1.1 {status} {}\r\nDate: {}\r\n", reason(status), http_date(now));
+    let mut head = format!("HTTP/1.1 {status} {reason}\r\nDate: {}\r\n", http_date(now));
     if let Content::Redirect(location) = content {
         head.push_str(&format!("Location: {location}\r\n"));
     }
-    head.push_str(&format!(
-        "Content-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    ));
+    head.push_str(&format!("Content-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()));
     let mut bytes = head.into_bytes();
     if !head_only {
         bytes.extend_from_slice(body);
@@ -178,10 +176,10 @@ mod tests {
 
     #[test]
     fn a_redirect_and_a_token() {
-        let text = String::from_utf8(response(301, &Content::Redirect("https://a.example/x?y"), 0, false)).unwrap();
+        let text = String::from_utf8(response(301, &Content::Redirect("https://a.example/x?y".into()), 0, false)).unwrap();
         assert!(text.starts_with("HTTP/1.1 301 Moved Permanently\r\n"));
         assert!(text.contains("\r\nLocation: https://a.example/x?y\r\n"));
-        let bytes = response(200, &Content::Token(b"tok.en"), 0, false);
+        let bytes = response(200, &Content::Token(b"tok.en".to_vec()), 0, false);
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("\r\nContent-Type: application/octet-stream\r\nContent-Length: 6\r\n"));
         assert!(text.ends_with("\r\n\r\ntok.en"));

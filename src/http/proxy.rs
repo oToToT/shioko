@@ -109,18 +109,16 @@ struct Exchange<'a, U> {
     expect: bool,
     /// The request is a WebSocket upgrade that the site allows.
     upgrade: bool,
-    /// What an own answer carries: the location of a redirect, or a token.
-    location: Option<String>,
-    token: Option<Vec<u8>>,
+    /// What an own answer carries besides its status.
+    content: Content,
     upstream: Option<U>,
     /// What was read from the upstream and not yet used.
     pending: Buffer,
     response: Option<Response>,
     /// How the response body is delimited by the upstream and towards the
-    /// client, and its length if stated.
+    /// client.
     response_framing: Framing,
     client_framing: Framing,
-    response_length: u64,
     /// The status that goes into the log.
     status: u16,
     /// The request was refused while its head was read, and it is HEAD.
@@ -137,14 +135,12 @@ impl<U> Exchange<'_, U> {
             length: 0,
             expect: false,
             upgrade: false,
-            location: None,
-            token: None,
+            content: Content::Text,
             upstream: None,
             pending: Buffer::new(),
             response: None,
             response_framing: Framing::Empty,
             client_framing: Framing::Empty,
-            response_length: 0,
             status: 0,
             refused_head: false,
         }
@@ -181,9 +177,9 @@ pub fn serve<'a, C: Stream, K: Connect>(client: &C, context: &Context<'a, K>) {
                 input.set_deadline(None);
                 Some(event)
             }
-            Action::Connect => Some(connect(context, &mut exchange)),
+            Action::Connect => Some(connect(context, &mut exchange).unwrap_or_else(Event::Fail)),
             Action::Forward => Some(forward(client, &mut input, context, &mut exchange)),
-            Action::ReadResponse => Some(read_response(&mut exchange)),
+            Action::ReadResponse => Some(read_response(&mut exchange).unwrap_or_else(Event::Fail)),
             Action::Interim => pass_interim(client, context, &mut exchange),
             Action::Respond { keep } => Some(respond(client, context, &mut exchange, keep)),
             Action::Error(status) => {
@@ -214,10 +210,6 @@ pub fn serve<'a, C: Stream, K: Connect>(client: &C, context: &Context<'a, K>) {
     }
 }
 
-fn is(value: &[u8], word: &str) -> bool {
-    value.eq_ignore_ascii_case(word.as_bytes())
-}
-
 /// The token of an ACME challenge request, if this is one.
 fn acme_token(request: &Request) -> Option<&[u8]> {
     let token = request.target.strip_prefix(ACME_PREFIX)?;
@@ -227,26 +219,16 @@ fn acme_token(request: &Request) -> Option<&[u8]> {
     (method_ok && token_ok).then_some(token)
 }
 
-/// A character that may appear as it stands in the path or query of a URI
-/// (RFC 3986: unreserved, sub-delims, ":", "@", "/", "?").
-fn is_uri_char(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric()
-        || matches!(
-            byte,
-            b'-' | b'.' | b'_' | b'~' | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b','
-                | b';' | b'=' | b':' | b'@' | b'/' | b'?'
-        )
-}
-
 /// A request target made fit to be the path and query of a URI: every byte
-/// that may not appear there is percent-encoded, and so is a `%` that does
-/// not begin a valid escape.
+/// that may not appear there as it stands (RFC 3986: unreserved,
+/// sub-delims, ":", "@", "/", "?") is percent-encoded, and so is a `%` that
+/// does not begin a valid escape.
 fn uri_path(target: &[u8]) -> String {
     let mut path = String::with_capacity(target.len());
     for (at, &byte) in target.iter().enumerate() {
         let escape = byte == b'%'
             && target.get(at.saturating_add(1)..at.saturating_add(3)).is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit));
-        if is_uri_char(byte) || escape {
+        if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/?".contains(&byte) || escape {
             path.push(char::from(byte));
         } else {
             path.push_str(&format!("%{byte:02X}"));
@@ -272,12 +254,9 @@ fn read_head<'a, C: Stream, K: Connect>(
     };
     exchange.started = Instant::now();
     client.set_read_timeout(context.timeouts.head);
-    let verdict = judge(&request, context, exchange);
+    let event = judge(&request, context, exchange).unwrap_or_else(Event::Fail);
     exchange.request = Some(request);
-    match verdict {
-        Ok(event) => event,
-        Err(status) => Event::Fail(status),
-    }
+    event
 }
 
 /// Checks a request head and finds its site. The error is the status of our
@@ -297,7 +276,7 @@ fn judge<'a, K: Connect>(
     if framing == Framing::Reject {
         return Err(400);
     }
-    let name = parse::host(fields.one("host").ok_or(400u16)?).ok_or(400u16)?;
+    let name = fields.one("host").and_then(parse::host).ok_or(400u16)?;
     let through_us = fields.list("via").iter().filter(|via| via.ends_with(b" shioko")).count();
     if through_us >= LOOP_LIMIT {
         return Err(400);
@@ -313,14 +292,15 @@ fn judge<'a, K: Connect>(
     let site = match context.tls_site {
         // The handshake chose the site, and with it the allowlist that was
         // applied. A request for another name does not belong here.
-        Some(site) if is(name, &site.name) => site,
+        Some(site) if name.eq_ignore_ascii_case(site.name.as_bytes()) => site,
         Some(_) => return Err(421),
         None => {
             if let Some(token) = acme_token(request) {
                 let path = context.acme.join(String::from_utf8_lossy(token).as_ref());
                 let small = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= TOKEN_LIMIT);
-                exchange.token = small.then(|| std::fs::read(&path).ok()).flatten();
-                return Err(if exchange.token.is_some() { 200 } else { 404 });
+                let token = small.then(|| std::fs::read(&path).ok()).flatten().ok_or(404u16)?;
+                exchange.content = Content::Token(token);
+                return Err(200);
             }
             let site = context.config.site(name).ok_or(404u16)?;
             if site.cert.is_some() {
@@ -331,7 +311,7 @@ fn judge<'a, K: Connect>(
                 if request.target.first() != Some(&b'/') {
                     return Err(400);
                 }
-                exchange.location = Some(format!("https://{}{}", site.name, uri_path(&request.target)));
+                exchange.content = Content::Redirect(format!("https://{}{}", site.name, uri_path(&request.target)));
                 return Err(301);
             }
             if !site.allows(context.peer) {
@@ -344,53 +324,41 @@ fn judge<'a, K: Connect>(
         return Err(413);
     }
 
-    let connection = fields.list("connection");
-    let has = |option: &str| connection.iter().any(|token| token == option.as_bytes());
     let modern = request.version == Version::V11;
-    let expects = fields.list("expect").iter().any(|value| value == b"100-continue");
-    let wants_websocket = fields.list("upgrade").iter().any(|protocol| protocol == b"websocket");
+    let expects = fields.has("expect", "100-continue");
     exchange.upgrade = site.websocket
         && modern
         && request.method == b"GET"
         && framing == Framing::Empty
-        && wants_websocket
-        && has("upgrade")
+        && fields.has("upgrade", "websocket")
+        && fields.has("connection", "upgrade")
         && !expects;
 
     exchange.site = Some(site);
     exchange.framing = framing;
     exchange.length = length;
     exchange.expect = expects && modern && has_body;
-    let keep = modern && !has("close");
+    let keep = modern && !fields.has("connection", "close");
     Ok(if exchange.upgrade { Event::Upgrade { keep } } else { Event::Request { keep } })
 }
 
-fn connect<K: Connect>(context: &Context<'_, K>, exchange: &mut Exchange<'_, K::Upstream>) -> Event {
-    let Some(site) = exchange.site else {
-        return Event::Fail(502);
-    };
-    match context.connect.connect(&site.upstream) {
-        Ok(upstream) => {
-            upstream.set_read_timeout(UPSTREAM_TIMEOUT);
-            exchange.upstream = Some(upstream);
-            Event::Connected
-        }
-        Err(status) => Event::Fail(status),
-    }
+/// Connects to the site's upstream. The error is the status of our answer.
+fn connect<K: Connect>(context: &Context<'_, K>, exchange: &mut Exchange<'_, K::Upstream>) -> Result<Event, u16> {
+    let site = exchange.site.ok_or(502u16)?;
+    let upstream = context.connect.connect(&site.upstream)?;
+    upstream.set_read_timeout(UPSTREAM_TIMEOUT);
+    exchange.upstream = Some(upstream);
+    Ok(Event::Connected)
 }
 
 /// Fields that concern one connection only and are never passed on.
-fn is_hop_by_hop(name: &[u8]) -> bool {
-    ["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]
-        .iter()
-        .any(|hop| is(name, hop))
-}
+const HOP_BY_HOP: [&str; 7] =
+    ["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"];
 
 fn push_field(head: &mut Vec<u8>, name: &[u8], value: &[u8]) {
-    head.extend_from_slice(name);
-    head.extend_from_slice(b": ");
-    head.extend_from_slice(value);
-    head.extend_from_slice(b"\r\n");
+    for part in [name, b": ", value, b"\r\n"] {
+        head.extend_from_slice(part);
+    }
 }
 
 /// Copies the fields that are passed on: all but the hop-by-hop ones, the
@@ -399,8 +367,7 @@ fn push_field(head: &mut Vec<u8>, name: &[u8], value: &[u8]) {
 fn pass_fields(head: &mut Vec<u8>, fields: &Fields, ours: &[&str]) {
     let named = fields.list("connection");
     for (name, value) in &fields.0 {
-        let dropped = is_hop_by_hop(name)
-            || ours.iter().any(|own| is(name, own))
+        let dropped = HOP_BY_HOP.iter().chain(ours).any(|hop| name.eq_ignore_ascii_case(hop.as_bytes()))
             || named.iter().any(|option| name.eq_ignore_ascii_case(option));
         if !dropped {
             push_field(head, name, value);
@@ -408,16 +375,13 @@ fn pass_fields(head: &mut Vec<u8>, fields: &Fields, ours: &[&str]) {
     }
 }
 
-/// The non-empty elements of every field with this name, each followed by
-/// ", ", ready for one more element to be added. Elements keep their case.
-fn list_with(fields: &Fields, name: &str) -> Vec<u8> {
-    let mut list = Vec::new();
+/// The non-empty elements of every field with this name, keeping their case,
+/// then `last`, as one list.
+fn list_with(fields: &Fields, name: &str, last: &[u8]) -> Vec<u8> {
     let elements = fields.all(name).flat_map(|value| value.split(|&b| b == b','));
-    for element in elements.map(<[u8]>::trim_ascii).filter(|e| !e.is_empty()) {
-        list.extend_from_slice(element);
-        list.extend_from_slice(b", ");
-    }
-    list
+    let mut list: Vec<&[u8]> = elements.map(<[u8]>::trim_ascii).filter(|e| !e.is_empty()).collect();
+    list.push(last);
+    list.join(b", ".as_slice())
 }
 
 /// The request head as the upstream gets it. It is written by us from what
@@ -427,11 +391,7 @@ fn upstream_head<K: Connect>(
     context: &Context<'_, K>,
     exchange: &Exchange<'_, K::Upstream>,
 ) -> Vec<u8> {
-    let mut head = Vec::with_capacity(1024);
-    head.extend_from_slice(&request.method);
-    head.push(b' ');
-    head.extend_from_slice(&request.target);
-    head.extend_from_slice(b" HTTP/1.1\r\n");
+    let mut head = [request.method.as_slice(), b" ", &request.target, b" HTTP/1.1\r\n"].concat();
     pass_fields(
         &mut head,
         &request.fields,
@@ -442,11 +402,10 @@ fn upstream_head<K: Connect>(
     // The addresses the request came through so far, then the client's;
     // and the intermediaries it came through, then us. Empty list elements
     // are left out.
-    let mut forwarded_for = list_with(&request.fields, "x-forwarded-for");
-    forwarded_for.extend_from_slice(peer.as_bytes());
+    let forwarded_for = list_with(&request.fields, "x-forwarded-for", peer.as_bytes());
     let scheme: &[u8] = if context.tls_site.is_some() { b"https" } else { b"http" };
-    let mut via = list_with(&request.fields, "via");
-    via.extend_from_slice(if request.version == Version::V10 { b"1.0 shioko" } else { b"1.1 shioko" });
+    let us: &[u8] = if request.version == Version::V10 { b"1.0 shioko" } else { b"1.1 shioko" };
+    let via = list_with(&request.fields, "via", us);
 
     push_field(&mut head, b"Host", request.fields.one("host").unwrap_or(b""));
     push_field(&mut head, b"X-Real-IP", peer.as_bytes());
@@ -458,15 +417,12 @@ fn upstream_head<K: Connect>(
         Framing::Chunked => push_field(&mut head, b"Transfer-Encoding", b"chunked"),
         _ => {}
     }
-    if exchange.upgrade {
-        push_field(&mut head, b"Connection", b"upgrade");
-        push_field(&mut head, b"Upgrade", b"websocket");
-    } else {
-        push_field(&mut head, b"Connection", b"close");
-    }
-    head.extend_from_slice(b"\r\n");
+    head.extend_from_slice(if exchange.upgrade { UPGRADE } else { b"Connection: close\r\n\r\n" });
     head
 }
+
+/// The end of a head that asks for, or agrees to, a WebSocket upgrade.
+const UPGRADE: &[u8] = b"Connection: upgrade\r\nUpgrade: websocket\r\n\r\n";
 
 /// Sends the request to the upstream: "100 Continue" to a client that waits
 /// for it, then the head, then the body.
@@ -476,16 +432,13 @@ fn forward<C: Stream, K: Connect>(
     context: &Context<'_, K>,
     exchange: &mut Exchange<'_, K::Upstream>,
 ) -> Event {
-    let (Some(request), Some(upstream), Some(site)) =
-        (&exchange.request, &exchange.upstream, exchange.site)
-    else {
+    let (Some(request), Some(upstream), Some(site)) = (&exchange.request, &exchange.upstream, exchange.site) else {
         return Event::Fail(502);
     };
     if exchange.expect && client.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").is_err() {
         return Event::Gone;
     }
-    let head = upstream_head(request, context, exchange);
-    if upstream.write_all(&head).is_err() {
+    if upstream.write_all(&upstream_head(request, context, exchange)).is_err() {
         return Event::Fail(502);
     }
     let copied = match exchange.framing {
@@ -502,50 +455,37 @@ fn forward<C: Stream, K: Connect>(
     }
 }
 
-/// Reads a response head from the upstream and decides what it is.
-fn read_response<U: Stream>(exchange: &mut Exchange<'_, U>) -> Event {
-    let Some(upstream) = &exchange.upstream else {
-        return Event::Fail(502);
-    };
-    let response = match parse::read_response(&mut exchange.pending, upstream) {
-        Ok(response) => response,
-        Err(status) => return Event::Fail(status),
-    };
-    let status = response.status;
-    let (length_class, length) = response.fields.length();
-    let coding = response.fields.coding();
+/// Reads a response head from the upstream and decides what it is. The
+/// error is the status of our answer.
+fn read_response<U: Stream>(exchange: &mut Exchange<'_, U>) -> Result<Event, u16> {
+    let upstream = exchange.upstream.as_ref().ok_or(502u16)?;
+    let response = parse::read_response(&mut exchange.pending, upstream)?;
+    let (status, fields) = (response.status, &response.fields);
     let event = if status == 101 {
-        let websocket = response.fields.list("upgrade").iter().any(|protocol| protocol == b"websocket")
-            && response.fields.list("connection").iter().any(|token| token == b"upgrade");
-        if websocket { Event::Switching } else { Event::Fail(502) }
+        if !(fields.has("upgrade", "websocket") && fields.has("connection", "upgrade")) {
+            return Err(502);
+        }
+        Event::Switching
     } else if status < 200 {
         Event::Interim
     } else {
         let bodiless = exchange.is_head() || status == 204 || status == 304;
-        let framing = fsm::response_framing(response.version, bodiless, length_class, coding);
+        let framing = fsm::response_framing(response.version, bodiless, fields.length().0, fields.coding());
         if framing == Framing::Reject {
-            return Event::Fail(502);
+            return Err(502);
         }
         exchange.response_framing = framing;
         exchange.client_framing = fsm::client_framing(framing, exchange.version());
-        exchange.response_length = length;
         Event::Final { delimited: exchange.client_framing != Framing::Close }
     };
-    // A length stated for a response without a body is passed on as it is.
-    if length_class == Length::One {
-        exchange.response_length = length;
-    }
     exchange.response = Some(response);
-    event
+    Ok(event)
 }
 
 /// A response head as the client gets it, without the fields that say how
 /// the body is delimited or what becomes of the connection.
 fn client_head(response: &Response, now: u64) -> Vec<u8> {
-    let mut head = Vec::with_capacity(1024);
-    head.extend_from_slice(format!("HTTP/1.1 {} ", response.status).as_bytes());
-    head.extend_from_slice(&response.reason);
-    head.extend_from_slice(b"\r\n");
+    let mut head = [format!("HTTP/1.1 {} ", response.status).as_bytes(), &response.reason, b"\r\n"].concat();
     pass_fields(&mut head, &response.fields, &["content-length", "expect"]);
     if response.fields.all("date").next().is_none() {
         push_field(&mut head, b"Date", own::http_date(now).as_bytes());
@@ -577,12 +517,8 @@ fn log_access<K: Connect>(context: &Context<'_, K>, exchange: &Exchange<'_, K::U
         ),
         None => ("-".into(), "-".into(), "-".into()),
     };
-    context.log.access(&format!(
-        "{} {host} \"{method} {target}\" {} {}ms",
-        net::canonical(context.peer),
-        exchange.status,
-        exchange.started.elapsed().as_millis()
-    ));
+    let (peer, status, millis) = (net::canonical(context.peer), exchange.status, exchange.started.elapsed().as_millis());
+    context.log.access(&format!("{peer} {host} \"{method} {target}\" {status} {millis}ms"));
 }
 
 /// Sends the response to the client: head, then body.
@@ -596,27 +532,24 @@ fn respond<C: Stream, K: Connect>(
         return Event::Fail(502);
     };
     exchange.status = response.status;
+    let (stated, length) = response.fields.length();
+    let rechunk = exchange.client_framing == Framing::Chunked;
     let mut head = client_head(response, (context.clock)());
-    match exchange.client_framing {
-        Framing::Chunked => push_field(&mut head, b"Transfer-Encoding", b"chunked"),
-        Framing::Length => {
-            push_field(&mut head, b"Content-Length", exchange.response_length.to_string().as_bytes());
-        }
-        // A response to HEAD, or a 304, may say how long the body would be.
-        Framing::Empty if response.fields.length().0 == Length::One && response.status != 204 => {
-            push_field(&mut head, b"Content-Length", exchange.response_length.to_string().as_bytes());
-        }
-        _ => {}
+    if rechunk {
+        push_field(&mut head, b"Transfer-Encoding", b"chunked");
+    } else if stated == Length::One && response.status != 204 {
+        // The length of the body, or, in answer to HEAD or with a 304, the
+        // length it would have. A 204 states none (RFC 9110 8.6).
+        push_field(&mut head, b"Content-Length", length.to_string().as_bytes());
     }
     if !keep {
         push_field(&mut head, b"Connection", b"close");
     }
     head.extend_from_slice(b"\r\n");
-    let rechunk = exchange.client_framing == Framing::Chunked;
     let copied = client.write_all(&head).map_err(|_| CopyError::Sink).and_then(|()| {
         let pending = &mut exchange.pending;
         match exchange.response_framing {
-            Framing::Length => body::copy_length(pending, upstream, client, exchange.response_length),
+            Framing::Length => body::copy_length(pending, upstream, client, length),
             Framing::Chunked => body::copy_chunked(pending, upstream, client, u64::MAX, rechunk),
             Framing::Close => body::copy_to_end(pending, upstream, client, rechunk),
             _ => Ok(()),
@@ -640,12 +573,7 @@ fn answer<C: Stream, K: Connect>(
     status: u16,
 ) {
     exchange.status = status;
-    let content = match (&exchange.location, &exchange.token) {
-        (Some(location), _) if status == 301 => Content::Redirect(location),
-        (_, Some(token)) if status == 200 => Content::Token(token),
-        _ => Content::Text,
-    };
-    let _ = client.write_all(&own::response(status, &content, (context.clock)(), exchange.is_head()));
+    let _ = client.write_all(&own::response(status, &exchange.content, (context.clock)(), exchange.is_head()));
     log_access(context, exchange);
 }
 
@@ -665,13 +593,12 @@ impl<A: Stream, B: Stream> Drop for ShutBoth<'_, A, B> {
 /// direction.
 fn pump<A: Stream, B: Stream>(from: &A, to: &B, started: Instant, last: &AtomicU64) {
     let _shut = ShutBoth(from, to);
-    let millis = |instant: Instant| u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let idle_limit = u64::try_from(TUNNEL_IDLE.as_millis()).unwrap_or(u64::MAX);
+    let millis = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut space = vec![0u8; 16 * 1024];
     loop {
         match from.read(&mut space) {
             Ok(n) if n > 0 => {
-                last.store(millis(started), Ordering::Relaxed);
+                last.store(millis(), Ordering::Relaxed);
                 if to.write_all(space.get(..n).unwrap_or(&[])).is_err() {
                     return;
                 }
@@ -679,8 +606,8 @@ fn pump<A: Stream, B: Stream>(from: &A, to: &B, started: Instant, last: &AtomicU
             // Nothing came this way in time. That is the end only if
             // nothing went the other way either.
             Err(error) if stream::timed_out(&error) => {
-                let quiet = millis(started).saturating_sub(last.load(Ordering::Relaxed));
-                if quiet >= idle_limit {
+                let quiet = millis().saturating_sub(last.load(Ordering::Relaxed));
+                if u128::from(quiet) >= TUNNEL_IDLE.as_millis() {
                     return;
                 }
             }
@@ -703,9 +630,7 @@ fn tunnel<C: Stream, K: Connect>(
     exchange.status = 101;
     log_access(context, exchange);
     let mut head = client_head(response, (context.clock)());
-    push_field(&mut head, b"Connection", b"upgrade");
-    push_field(&mut head, b"Upgrade", b"websocket");
-    head.extend_from_slice(b"\r\n");
+    head.extend_from_slice(UPGRADE);
     let _shut = ShutBoth(client, upstream);
     let early = client
         .write_all(&head)

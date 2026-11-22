@@ -169,6 +169,7 @@ pub fn start() -> (State, Vec<Action>) {
 
 pub fn step(s: State, e: Event) -> (State, Vec<Action>) {
     let close = |actions| (State::at(Phase::Closed), actions);
+    let to = |phase, actions| (State { phase, ..s }, actions);
     match (s.phase, e) {
         (Phase::Closed, _) => (s, vec![]),
         (_, Event::Gone) => close(vec![]),
@@ -177,22 +178,14 @@ pub fn step(s: State, e: Event) -> (State, Vec<Action>) {
             close(vec![Action::Error(status)])
         }
         (_, Event::Fail(_)) => close(vec![]),
-        (Phase::Idle, Event::Request { keep }) => {
-            (State { phase: Phase::Connect, keep, upgrade: false }, vec![Action::Connect])
+        (Phase::Idle, Event::Request { keep } | Event::Upgrade { keep }) => {
+            let upgrade = matches!(e, Event::Upgrade { .. });
+            (State { phase: Phase::Connect, keep, upgrade }, vec![Action::Connect])
         }
-        (Phase::Idle, Event::Upgrade { keep }) => {
-            (State { phase: Phase::Connect, keep, upgrade: true }, vec![Action::Connect])
-        }
-        (Phase::Connect, Event::Connected) => {
-            (State { phase: Phase::Forward, ..s }, vec![Action::Forward])
-        }
-        (Phase::Forward, Event::Sent) => {
-            (State { phase: Phase::Response, ..s }, vec![Action::ReadResponse])
-        }
+        (Phase::Connect, Event::Connected) => to(Phase::Forward, vec![Action::Forward]),
+        (Phase::Forward, Event::Sent) => to(Phase::Response, vec![Action::ReadResponse]),
         (Phase::Response, Event::Interim) => (s, vec![Action::Interim, Action::ReadResponse]),
-        (Phase::Response, Event::Switching) if s.upgrade => {
-            (State { phase: Phase::Tunnel, ..s }, vec![Action::Tunnel])
-        }
+        (Phase::Response, Event::Switching) if s.upgrade => to(Phase::Tunnel, vec![Action::Tunnel]),
         (Phase::Response, Event::Switching) => close(vec![Action::Error(502)]),
         (Phase::Response, Event::Final { delimited }) => {
             let keep = s.keep && delimited;
