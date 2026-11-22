@@ -69,6 +69,10 @@ bench = false
 [[bin]]
 name = "tls_connection"
 path = "fuzz_targets/tls_connection.rs"
+
+[[bin]]
+name = "tls_session"
+path = "fuzz_targets/tls_session.rs"
 test = false
 doc = false
 bench = false

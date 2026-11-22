@@ -7,7 +7,8 @@ ClientHello shioko would serve, requests and responses of each framing, a
 certificate and a key, a configuration, whole connections. The layout of
 each target's input is the one fuzz/src/lib.rs reads: a piece size (0 for
 all at once), and for the connection targets the client's part with its
-length in two bytes, then what the upstream answers.
+length in two bytes, then what the upstream answers; for tls_session the
+client's part is records its harness seals after a real handshake.
 """
 
 import os
@@ -44,6 +45,15 @@ def client_hello(name=b"site.test", groups=(0x001d, 0x11ec), share=True, alpn=Tr
 
 def record(content_type, data):
     return bytes([content_type]) + b"\x03\x01" + vec(2, data)
+
+
+def sealed(*records):
+    """The tls_session target's records: a content type (255 for bytes sent
+    as they are), a length, the content; its harness seals them."""
+    return b"".join(bytes([t]) + vec(2, content) for t, content in records)
+
+
+KEY_UPDATE, KEY_UPDATE_REQUESTED = b"\x18\x00\x00\x01\x00", b"\x18\x00\x00\x01\x01"
 
 
 def connection(piece, client, answer):
@@ -86,6 +96,17 @@ def seeds():
                            + [connection(1, REQUESTS[3], RESPONSES[4])],
         "tls_connection": [connection(0, record(22, h), RESPONSES[0]) for h in hellos[:5]]
                           + [connection(7, record(22, hellos[0]) + record(20, b"\x01"), b"")],
+        "tls_session": [
+            connection(0, sealed((23, REQUESTS[0])), RESPONSES[0]),
+            connection(0, sealed((22, KEY_UPDATE_REQUESTED), (23, REQUESTS[0])), RESPONSES[1]),
+            connection(0, sealed((22, KEY_UPDATE), (23, REQUESTS[4][:30]), (23, REQUESTS[4][30:])), RESPONSES[0]),
+            connection(0, sealed((21, b"\x01\x00")), b""),
+            connection(0, sealed((23, b""), (23, b""), (23, REQUESTS[0])), RESPONSES[2]),
+            connection(0, sealed((20, b"\x01"), (23, REQUESTS[0])), RESPONSES[0]),
+            connection(3, sealed((23, REQUESTS[2][:40]), (22, KEY_UPDATE), (23, REQUESTS[2][40:])), RESPONSES[3]),
+            connection(0, sealed((255, b"\x17\x03\x03\x00\x10" + bytes(16))), b""),
+            connection(0, sealed((23, REQUESTS[3]), (23, b"frames up")), RESPONSES[4]),
+        ],
     }
     return out
 

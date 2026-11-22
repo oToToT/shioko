@@ -623,7 +623,7 @@ Each tool is used where it is strongest:
 | Key schedule | the two handshake traces of RFC 8448, every intermediate secret | yes, for the traces |
 | Crypto primitives | RFC and Wycheproof vectors | yes, for the vectors |
 | Every parser, against malformed input | Kani proofs, mutation tests (hundreds of thousands of corrupted inputs per parser), and coverage-guided fuzzing (`fuzz/`) | yes, for the inputs tried |
-| Whole connections, plain and TLS, against anything a client or an upstream may send | coverage-guided fuzzing of `proxy::serve` and `TlsStream::accept` over streams of the fuzzer's bytes, cut in pieces of any size | yes, for the inputs tried |
+| Whole connections, plain and TLS, against anything a client or an upstream may send | coverage-guided fuzzing of `proxy::serve` and `TlsStream::accept` over streams of the fuzzer's bytes, cut in pieces of any size; and past the handshake, a client in the harness (`fuzz/src/peer.rs`) that does a real handshake, then seals the fuzzer's records under its keys, and checks that every record the server sends opens under the server's keys, holds at most 16 KB, and that none follows an alert | yes, for the inputs tried |
 
 The byte-level properties were first modelled in TLA+ as well; that model
 checked a description of sequential code rather than the code, so it was
@@ -827,7 +827,7 @@ stay with the test vectors.
 | TLS negative | own end-to-end tests of every refusal (`src/tls/tests.rs`); tlsfuzzer, every TLS 1.3 script with every probe, through `tools/tlsfuzzer-profile.py` (which makes its ClientHellos offer our suite, group, scheme and a server name); `tests/tlsfuzzer.txt` lists each probe expected to fail, with the error and why |
 | HTTP | unit tests, refusal corpus (`requests_we_refuse_and_why`, `upstream_responses_we_refuse`), the scripted-stream sweep above, real sockets |
 | Config | every directive and every startup rule, including each error case |
-| Malformed input | mutation tests: ClientHello, records, HTTP heads, chunk sizes, PEM and DER; coverage-guided fuzzing with libFuzzer (`fuzz/`, `tools/fuzz.sh`) of the ClientHello parser, request and response heads, bodies, PEM and DER, the configuration, and whole plain and TLS connections. CI runs each target for 20 s from its seeds (`fuzz/seeds/`, written by `tools/fuzz-seeds.py`); the long runs are local |
+| Malformed input | mutation tests: ClientHello, records, HTTP heads, chunk sizes, PEM and DER; coverage-guided fuzzing with libFuzzer (`fuzz/`, `tools/fuzz.sh`) of the ClientHello parser, request and response heads, bodies, PEM and DER, the configuration, whole plain and TLS connections, and TLS connections past a real handshake (records, key updates, alerts, HTTP over TLS). CI runs each target for 20 s from its seeds (`fuzz/seeds/`, written by `tools/fuzz-seeds.py`); the long runs are local |
 | End to end | the Docker environment below |
 
 `tools/check.sh` is the single definition of "all checks" on the code: lint,
