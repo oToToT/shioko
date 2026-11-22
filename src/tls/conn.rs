@@ -322,7 +322,9 @@ impl<'a, S: Stream> TlsStream<'a, S> {
                     Event::Invalid(Alert::DecodeError)
                 }
             },
-            record::APPLICATION_DATA => return Some((wrap(Content::Data), content)),
+            record::APPLICATION_DATA => {
+                return Some((wrap(if content.is_empty() { Content::EmptyData } else { Content::Data }), content));
+            }
             record::HANDSHAKE => self.handshake(reader, hs, served, state.phase, &content).map_or_else(Event::Invalid, wrap),
             _ => Event::Invalid(Alert::UnexpectedMessage),
         };

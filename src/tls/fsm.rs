@@ -29,9 +29,16 @@ pub struct State {
     pub owed: bool,
     /// The client offered early data, which we skip.
     pub early: bool,
+    /// How many records in a row have carried nothing: no application data
+    /// and no step of the handshake.
+    pub quiet: u8,
 }
 
-pub const START: State = State { phase: Phase::Start, partial: false, owed: false, early: false };
+pub const START: State = State { phase: Phase::Start, partial: false, owed: false, early: false, quiet: 0 };
+/// The most records in a row that may carry nothing (a dropped
+/// ChangeCipherSpec, a KeyUpdate, an empty application data record), as in
+/// OpenSSL and BoringSSL; one more ends the connection.
+pub const QUIET_LIMIT: u8 = 32;
 const CLOSED: State = State { phase: Phase::Closed, ..START };
 
 /// The alerts we send, numbered as on the wire (RFC 8446 section 6).
@@ -69,6 +76,8 @@ pub enum Content {
     /// Any other alert.
     Alert,
     Data,
+    /// An application data record with nothing in it.
+    EmptyData,
     /// Handshake bytes that do not yet complete a message.
     Fragment,
     /// A ClientHello we can serve.
@@ -149,8 +158,22 @@ impl Action {
 
 type Result = (State, Vec<Action>);
 
+/// A record that moves the connection on; the count of quiet records starts
+/// again.
 fn go(s: State, phase: Phase, actions: Vec<Action>) -> Result {
-    (State { phase, partial: false, ..s }, actions)
+    (State { phase, partial: false, quiet: 0, ..s }, actions)
+}
+
+/// The records that carry nothing and are counted: the dummy
+/// ChangeCipherSpec we drop, a KeyUpdate, an empty application data record.
+/// A record that completes a split KeyUpdate counts too, so splitting each
+/// one does not start the count again.
+fn quiet(s: State, protected: bool, c: Content) -> bool {
+    use Content as C;
+    let handshake = !matches!(c, C::Ccs | C::CloseNotify | C::Alert | C::Data | C::EmptyData);
+    (!s.partial || handshake)
+        && ((c == C::Ccs && !protected && matches!(s.phase, Phase::Retry | Phase::WaitFinished))
+            || (protected && s.phase == Phase::Open && matches!(c, C::KeyUpdate | C::KeyUpdateRequest | C::EmptyData)))
 }
 
 fn fail(alert: Alert) -> Result {
@@ -163,26 +186,32 @@ fn fail(alert: Alert) -> Result {
 const FLIGHT: [Action; 4] =
     [Action::WriteKeys(Level::Handshake), Action::ReadKeys(Level::Handshake), Action::Send(Kind::Flight), Action::WriteKeys(Level::Data)];
 
-fn on_record(s: State, protected: bool, c: Content) -> Result {
+fn on_record(limit: u8, s: State, protected: bool, c: Content) -> Result {
     use Content as C;
     use Phase as P;
     // The first record that decrypts ends the skipping of early data.
     let t = if protected { State { early: false, ..s } } else { s };
+    // t, with one more quiet record counted.
+    let q = State { partial: false, quiet: s.quiet.saturating_add(1), ..t };
     let have_read_keys = matches!(s.phase, P::WaitFinished | P::Open);
-    if s.partial && matches!(c, C::Ccs | C::CloseNotify | C::Alert | C::Data) {
+    if s.partial && matches!(c, C::Ccs | C::CloseNotify | C::Alert | C::Data | C::EmptyData) {
         // Nothing may come between the pieces of a handshake message.
+        return fail(Alert::UnexpectedMessage);
+    }
+    if quiet(s, protected, c) && s.quiet >= limit {
+        // One record too many in a row with nothing in it.
         return fail(Alert::UnexpectedMessage);
     }
     if c == C::Ccs {
         // Dropped, but only unencrypted and only between the first
         // ClientHello and the client Finished.
         return if !protected && matches!(s.phase, P::Retry | P::WaitFinished) {
-            (s, vec![])
+            (q, vec![])
         } else {
             fail(Alert::UnexpectedMessage)
         };
     }
-    if s.early && s.phase == P::Retry && !protected && c == C::Data {
+    if s.early && s.phase == P::Retry && !protected && matches!(c, C::Data | C::EmptyData) {
         // Early data sent before our HelloRetryRequest arrived.
         return (s, vec![Action::Skip]);
     }
@@ -217,17 +246,22 @@ fn on_record(s: State, protected: bool, c: Content) -> Result {
         (P::WaitFinished, C::Finished) => go(t, P::Open, vec![Action::ReadKeys(Level::Data)]),
         (P::WaitFinished, C::FinishedBad) => fail(Alert::DecryptError),
         (P::Open, C::Data) => go(t, P::Open, vec![Action::Deliver]),
-        (P::Open, C::KeyUpdate) => go(t, P::Open, vec![Action::ReadKeys(Level::Next)]),
+        (P::Open, C::EmptyData) => (q, vec![]),
+        (P::Open, C::KeyUpdate) => (q, vec![Action::ReadKeys(Level::Next)]),
         // Our own KeyUpdate goes out with the next write, not now, so that
         // reading never has to wait for writing.
-        (P::Open, C::KeyUpdateRequest) => {
-            go(State { owed: true, ..t }, P::Open, vec![Action::ReadKeys(Level::Next)])
-        }
+        (P::Open, C::KeyUpdateRequest) => (State { owed: true, ..q }, vec![Action::ReadKeys(Level::Next)]),
         _ => fail(Alert::UnexpectedMessage),
     }
 }
 
 pub fn step(s: State, e: Event) -> Result {
+    step_with(QUIET_LIMIT, s, e)
+}
+
+/// `step`, with `limit` quiet records in a row allowed: the spec's table is
+/// printed for a small limit.
+fn step_with(limit: u8, s: State, e: Event) -> Result {
     if s.phase == Phase::Closed {
         return (s, vec![]);
     }
@@ -243,8 +277,8 @@ pub fn step(s: State, e: Event) -> Result {
             vec![Action::Send(Kind::KeyUpdate), Action::WriteKeys(Level::Next), Action::Send(Kind::Data)],
         ),
         Event::Write => (s, vec![Action::Send(Kind::Data)]),
-        Event::Plain(c) => on_record(s, false, c),
-        Event::Protected(c) => on_record(s, true, c),
+        Event::Plain(c) => on_record(limit, s, false, c),
+        Event::Protected(c) => on_record(limit, s, true, c),
     }
 }
 
@@ -263,7 +297,8 @@ mod tests {
             "closed" => Phase::Closed,
             other => panic!("phase {other}"),
         };
-        State { phase, partial: words[1] == "partial", owed: words[2] == "owed", early: words[3] == "skipping" }
+        let quiet = words[4].strip_prefix('q').unwrap().parse().unwrap();
+        State { phase, partial: words[1] == "partial", owed: words[2] == "owed", early: words[3] == "skipping", quiet }
     }
 
     fn alert(word: &str) -> Alert {
@@ -292,6 +327,7 @@ mod tests {
             "close_notify" => Content::CloseNotify,
             "alert" => Content::Alert,
             "data" => Content::Data,
+            "empty_data" => Content::EmptyData,
             "fragment" => Content::Fragment,
             "hello" => Content::Hello,
             "hello_retry" => Content::HelloRetry,
@@ -350,6 +386,10 @@ mod tests {
         }
     }
 
+    /// The limit of quiet records the table was printed with (MaxQuiet in
+    /// spec/HandshakeTable.cfg).
+    const TABLE_QUIET_LIMIT: u8 = 2;
+
     /// `step` gives, for every state and event, what the spec gives.
     #[test]
     fn same_as_the_spec_on_every_input() {
@@ -358,15 +398,15 @@ mod tests {
             let (input, output) = line.split_once(" => ").unwrap();
             let input: Vec<&str> = input.split(' ').collect();
             let output: Vec<&str> = output.split(' ').collect();
-            let expected = (state(&output[..4]), output[4..].iter().map(|w| action(w)).collect::<Vec<_>>());
+            let expected = (state(&output[..5]), output[5..].iter().map(|w| action(w)).collect::<Vec<_>>());
             match input[0] {
                 "start" => assert_eq!((START, vec![]), expected, "{line}"),
-                "step" => assert_eq!(step(state(&input[1..5]), event(input[5])), expected, "{line}"),
+                "step" => assert_eq!(step_with(TABLE_QUIET_LIMIT, state(&input[1..6]), event(input[6])), expected, "{line}"),
                 other => panic!("unknown function {other}"),
             }
             rows += 1;
         }
-        assert_eq!(rows, 1801);
+        assert_eq!(rows, 5641);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use super::client::{Client, Got, SECRET, hybrid_share, share};
 use super::conn::{Identity, Served, TlsStream};
 use super::msgs::tests::{Hello, alpn, key_shares, sni, u16s, vec16};
-use super::{msgs, record};
+use super::{fsm, msgs, record};
 use crate::config::Config;
 use crate::crypto;
 use crate::log::testing::Kept;
@@ -413,6 +413,63 @@ fn a_client_hello_in_pieces_and_how_not_to() {
     let mut client = Client::connect(address);
     client.send(record::HANDSHAKE, &[]);
     assert_eq!(client.alert(), Some(10));
+}
+
+/// Records that carry nothing (a KeyUpdate, an empty application data
+/// record, the dummy ChangeCipherSpec) are let through up to QUIET_LIMIT in
+/// a row. Application data starts the count again; one record too many
+/// gets unexpected_message.
+#[test]
+fn records_with_nothing_in_them_are_capped() {
+    let limit = usize::from(fsm::QUIET_LIMIT);
+    let address = server();
+    // KeyUpdates and empty records, mixed, up to the limit: fine, and the
+    // data that follows starts the count again.
+    let mut client = Client::handshake(address, "site.test", &public("site.test"));
+    for round in 0..2 {
+        for i in 0..limit {
+            if i % 2 == 0 {
+                client.send(record::HANDSHAKE, &msgs::key_update(false));
+                client.write.as_mut().unwrap().next();
+            } else {
+                client.send(record::APPLICATION_DATA, b"");
+            }
+        }
+        client.send(record::APPLICATION_DATA, b"x");
+        assert_eq!(client.get(), Got::Data(b"x".to_vec()), "round {round}");
+    }
+    for _ in 0..=limit {
+        client.send(record::APPLICATION_DATA, b"");
+    }
+    assert_eq!(client.alert(), Some(10));
+
+    // A KeyUpdate split over two records counts all the same.
+    let mut client = Client::handshake(address, "site.test", &public("site.test"));
+    let update = msgs::key_update(false);
+    for _ in 0..=limit {
+        client.send(record::HANDSHAKE, &update[..2]);
+        client.send(record::HANDSHAKE, &update[2..]);
+        client.write.as_mut().unwrap().next();
+    }
+    assert_eq!(client.alert(), Some(10));
+
+    // During the handshake, ChangeCipherSpec records up to the limit are
+    // dropped, and one more is refused.
+    for (count, refused) in [(limit, false), (limit + 1, true)] {
+        let mut client = Client::connect(address);
+        client.send_hello(&hello("site.test"));
+        for _ in 0..count {
+            client.send(record::CHANGE_CIPHER_SPEC, &[1]);
+        }
+        client.through_flight(&public("site.test"));
+        if refused {
+            assert_eq!(client.alert(), Some(10));
+        } else {
+            client.finish(true);
+            client.send(record::APPLICATION_DATA, b"y");
+            assert_eq!(client.get(), Got::Data(b"y".to_vec()));
+        }
+    }
 }
 
 #[test]

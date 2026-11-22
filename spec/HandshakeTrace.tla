@@ -54,7 +54,8 @@ Refusals == {<<"invalid", a>> : a \in Alerts \ {"close_notify"}}
 \* What the state machine may be told about a record it can read, from what
 \* the record held (its classification by tools/tlstrace.py).
 Content(p, c) ==
-    CASE c \in {"ccs", "close_notify", "alert", "data", "fragment", "other"} ->
+    CASE c \in {"ccs", "close_notify", "alert", "data", "empty_data", "fragment",
+               "other"} ->
             {<<p, c>>}
       [] c \in {"hello", "hello_retry", "hello_early", "hello_retry_early"} ->
             IF fsm.phase \in {"start", "retry"} THEN {<<p, c>>} \cup Refusals

@@ -29,12 +29,20 @@ EXTENDS Naturals, Sequences
 \* closed         nothing more is sent or accepted
 Phases == {"start", "retry", "wait_finished", "open", "closed"}
 
+\* The most records in a row that may carry nothing (Quiet, below); the
+\* server uses 32, as OpenSSL and BoringSSL do.
+CONSTANT MaxQuiet
+
 \* partial: the start of a handshake message has arrived, the rest has not.
 \* owed:    the peer asked for a KeyUpdate and we have not sent ours yet.
 \* early:   the client offered early data. We never accept it, so the
 \*          records that carry it are skipped (RFC 8446, 4.2.10).
-States == [phase : Phases, partial : BOOLEAN, owed : BOOLEAN, early : BOOLEAN]
-Start  == [phase |-> "start", partial |-> FALSE, owed |-> FALSE, early |-> FALSE]
+\* quiet:   how many records in a row have carried nothing: no application
+\*          data and no step of the handshake.
+States == [phase : Phases, partial : BOOLEAN, owed : BOOLEAN, early : BOOLEAN,
+           quiet : 0..MaxQuiet]
+Start  == [phase |-> "start", partial |-> FALSE, owed |-> FALSE, early |-> FALSE,
+           quiet |-> 0]
 
 Alerts == {"close_notify", "unexpected_message", "bad_record_mac",
            "record_overflow", "handshake_failure", "illegal_parameter",
@@ -47,6 +55,7 @@ Alerts == {"close_notify", "unexpected_message", "bad_record_mac",
 \*   close_notify        the peer is done sending
 \*   alert               any other alert
 \*   data                application data
+\*   empty_data          an application data record with nothing in it
 \*   fragment            handshake bytes that do not yet complete a message
 \*   hello               a ClientHello we can serve
 \*   hello_retry         a ClientHello we can serve once it brings an X25519
@@ -61,7 +70,8 @@ Alerts == {"close_notify", "unexpected_message", "bad_record_mac",
 HandshakeContents == {"fragment", "hello", "hello_retry", "hello_early",
                       "hello_retry_early", "finished", "finished_bad",
                       "key_update", "key_update_request", "other"}
-Contents == {"ccs", "close_notify", "alert", "data"} \cup HandshakeContents
+Contents == {"ccs", "close_notify", "alert", "data", "empty_data"}
+                \cup HandshakeContents
 
 \* An event is a pair.
 \*   <<"plain", c>>      a record that arrived unencrypted
@@ -96,7 +106,10 @@ Actions == ({"send"} \X {"server_hello", "retry", "ccs", "flight",
                \cup {Deliver, Skip}
 
 Stay(s)     == [state |-> s, acts |-> <<>>]
-Go(s, p, as) == [state |-> [s EXCEPT !.phase = p, !.partial = FALSE], acts |-> as]
+\* A record that moves the connection on; the count of quiet records starts
+\* again.
+Go(s, p, as) == [state |-> [s EXCEPT !.phase = p, !.partial = FALSE, !.quiet = 0],
+                 acts |-> as]
 Close(as)   == [state |-> [Start EXCEPT !.phase = "closed"], acts |-> as]
 Fail(desc)  == Close(<<Alert(desc)>>)
 
@@ -106,18 +119,33 @@ Fail(desc)  == Close(<<Alert(desc)>>)
 Flight == <<WriteKeys("handshake"), ReadKeys("handshake"), Send("flight"),
             WriteKeys("data")>>
 
+\* The records that carry nothing and are counted: the dummy
+\* ChangeCipherSpec we drop, a KeyUpdate, an empty application data record.
+\* A record that completes a split KeyUpdate counts too, so splitting each
+\* one does not start the count again.
+Quiet(s, protected, c) ==
+    /\ s.partial => c \in HandshakeContents
+    /\ \/ c = "ccs" /\ ~protected /\ s.phase \in {"retry", "wait_finished"}
+       \/ /\ protected /\ s.phase = "open"
+          /\ c \in {"key_update", "key_update_request", "empty_data"}
+
 OnRecord(s, protected, c) ==
     \* The first record that decrypts ends the skipping of early data.
-    LET t == IF protected THEN [s EXCEPT !.early = FALSE] ELSE s IN
+    LET t == IF protected THEN [s EXCEPT !.early = FALSE] ELSE s
+        \* t, with one more quiet record counted
+        q == [t EXCEPT !.partial = FALSE, !.quiet = s.quiet + 1] IN
     IF s.partial /\ c \notin HandshakeContents THEN
         \* Nothing may come between the pieces of a handshake message.
+        Fail("unexpected_message")
+    ELSE IF Quiet(s, protected, c) /\ s.quiet = MaxQuiet THEN
+        \* One record too many in a row with nothing in it.
         Fail("unexpected_message")
     ELSE IF c = "ccs" THEN
         \* Dropped, but only unencrypted and only between the first
         \* ClientHello and the client Finished.
         IF ~protected /\ s.phase \in {"retry", "wait_finished"}
-        THEN Stay(s) ELSE Fail("unexpected_message")
-    ELSE IF s.early /\ s.phase = "retry" /\ ~protected /\ c = "data" THEN
+        THEN [state |-> q, acts |-> <<>>] ELSE Fail("unexpected_message")
+    ELSE IF s.early /\ s.phase = "retry" /\ ~protected /\ c \in {"data", "empty_data"} THEN
         \* Early data sent before our HelloRetryRequest arrived. Without
         \* read keys it shows as a record of the application data type.
         [state |-> s, acts |-> <<Skip>>]
@@ -153,12 +181,14 @@ OnRecord(s, protected, c) ==
         Fail("decrypt_error")
     ELSE IF s.phase = "open" /\ c = "data" THEN
         Go(t, "open", <<Deliver>>)
+    ELSE IF s.phase = "open" /\ c = "empty_data" THEN
+        [state |-> q, acts |-> <<>>]
     ELSE IF s.phase = "open" /\ c = "key_update" THEN
-        Go(t, "open", <<ReadKeys("next")>>)
+        [state |-> q, acts |-> <<ReadKeys("next")>>]
     ELSE IF s.phase = "open" /\ c = "key_update_request" THEN
         \* Our own KeyUpdate goes out with the next write, not now, so that
         \* reading never has to wait for writing.
-        Go([t EXCEPT !.owed = TRUE], "open", <<ReadKeys("next")>>)
+        [state |-> [q EXCEPT !.owed = TRUE], acts |-> <<ReadKeys("next")>>]
     ELSE Fail("unexpected_message")
 
 Step(s, e) ==
@@ -216,18 +246,35 @@ SkipOnlyEarlyData ==
         /\ (\E i \in DOMAIN Step(s, e).acts : Step(s, e).acts[i] = Skip) =>
             /\ s.early /\ Step(s, e).state = s
             /\ \/ s.phase = "wait_finished" /\ e = <<"undecryptable", "">>
-               \/ s.phase = "retry" /\ e = <<"plain", "data">>
+               \/ s.phase = "retry" /\ e \in {<<"plain", "data">>, <<"plain", "empty_data">>}
         /\ (e[1] = "protected" /\ s.phase # "closed") => ~Step(s, e).state.early
 
-\* Only three things are let pass without any effect. Everything else either
-\* moves the connection on or ends it.
+\* Only four things are let pass without any effect but the count of quiet
+\* records. Everything else either moves the connection on or ends it.
+Ignored(s, r) == r.acts = <<>> /\ [r.state EXCEPT !.quiet = s.quiet] = s
 NothingElseIgnored ==
     \A s \in States, e \in Events :
-        (s.phase # "closed" /\ Step(s, e) = Stay(s)) =>
+        (s.phase # "closed" /\ Ignored(s, Step(s, e))) =>
             \/ /\ e = <<"plain", "ccs">>       \* middlebox compatibility
                /\ s.phase \in {"retry", "wait_finished"}
+            \/ /\ e = <<"protected", "empty_data">>  \* allowed, and counted
+               /\ s.phase = "open"
             \/ e[2] = "fragment" /\ s.partial  \* more of a split message
             \/ e[1] = "write"                  \* refused: not open yet
+
+\* Records with nothing in them are counted, and one too many in a row ends
+\* the connection. Application data and every step of the handshake start
+\* the count again; nothing else changes it.
+QuietCapped ==
+    \A s \in States, e \in Events :
+        LET r == Step(s, e) IN
+        s.phase # "closed" =>
+            IF e[1] \in {"plain", "protected"} /\ Quiet(s, e[1] = "protected", e[2])
+            THEN IF s.quiet = MaxQuiet THEN r = Fail("unexpected_message")
+                 ELSE r.state.quiet = s.quiet + 1
+            ELSE r.state.quiet =
+                    IF r.state.phase # s.phase \/ \E i \in DOMAIN r.acts : r.acts[i] = Deliver
+                    THEN 0 ELSE s.quiet
 
 \* While a handshake message is incomplete, only more handshake bytes may
 \* follow.
@@ -243,7 +290,8 @@ PlainRefusedAfterKeys ==
         s.phase \in {"wait_finished", "open"} =>
             Step(s, <<"plain", c>>) =
                 IF s.phase = "wait_finished" /\ ~s.partial /\ c = "ccs"
-                THEN Stay(s)
+                THEN IF s.quiet = MaxQuiet THEN Fail("unexpected_message")
+                     ELSE [state |-> [s EXCEPT !.quiet = s.quiet + 1], acts |-> <<>>]
                 ELSE IF s.phase = "wait_finished" /\ ~s.partial
                         /\ c \in {"alert", "close_notify"}
                 THEN Close(<<>>)

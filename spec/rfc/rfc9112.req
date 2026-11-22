@@ -473,7 +473,7 @@
 
 @ 9.5
 > A client or server that wishes to time out SHOULD issue a graceful close on the connection.
-= row step open whole even strict close:- => closed whole even strict alert:close_notify
+= row step open whole even strict q0 close:- => closed whole even strict q0 alert:close_notify
 = code on every deadline (head read, keep-alive idle, tunnel idle) end the connection in order: close_notify over TLS, then shut the socket down
 = test bug_close_notify_was_missing_on_shutdown
 = test the_handshake_has_a_deadline
@@ -531,7 +531,7 @@
 = check Handshake.DataOnlyAfterFinished
 = check Handshake.DataOnlyWhenOpen
 = check Handshake.RightKeys
-= row step open whole even strict write:- => open whole even strict send:data
+= row step open whole even strict q0 write:- => open whole even strict q0 send:data
 
 @ 9.8
 > When encountering an incomplete close, a client SHOULD treat as completed all requests for which it has received either
@@ -541,13 +541,13 @@
 > Clients MUST send a closure alert before closing the connection.
 = peer client: an end of stream without close_notify is the TLS close event: shioko sends its own close_notify and closes (step open whole even strict close:- => closed whole even strict alert:close_notify) and the HTTP side sees the client as gone; request bodies are delimited by length or chunks, so a truncated one is never completed towards the upstream
 > Servers SHOULD be prepared to receive an incomplete close from the client, since the client can often locate the end of server data.
-= row step open whole even strict close:- => closed whole even strict alert:close_notify
-= row step open whole even strict lost:- => closed whole even strict
+= row step open whole even strict q0 close:- => closed whole even strict q0 alert:close_notify
+= row step open whole even strict q0 lost:- => closed whole even strict q0
 = row step idle keep plain gone:- => closed close plain
 = row step relay keep plain gone:- => closed close plain
 > Servers MUST attempt to initiate an exchange of closure alerts with the client before closing the connection.
-= row step open whole even strict close:- => closed whole even strict alert:close_notify
-= row step open whole even strict protected:close_notify => closed whole even strict alert:close_notify
+= row step open whole even strict q0 close:- => closed whole even strict q0 alert:close_notify
+= row step open whole even strict q0 protected:close_notify => closed whole even strict q0 alert:close_notify
 = code feed the TLS close event whenever we end a connection that can still be written to (application done, any deadline, end of the client's stream), before the socket is shut down; only a failed transport ends silently
 = test bug_close_notify_was_missing_on_shutdown
 = test the_end_of_the_client_stream_is_answered

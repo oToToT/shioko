@@ -301,7 +301,7 @@ class Connection:
                 return "close_notify" if content[1] == 0 else "alert"
             return "alert_empty" if not content else "alert_bad"
         if inner == 23:
-            return "data"
+            return "data" if content else "empty_data"
         if inner != 22:
             return "badtype"
         if not content:

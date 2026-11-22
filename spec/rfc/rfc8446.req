@@ -15,17 +15,17 @@
 = code put exactly one KeyShareEntry in ServerHello, of the group of the client share it answers: X25519MLKEM768 (0x11EC) if the client sent one, else x25519 (0x001D)
 = test our_hellos_field_by_field
 = test a_hello_retry_request_and_then_the_handshake
-= row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
+= row step start whole even strict q0 plain:hello_retry => retry whole even strict q0 send:retry send:ccs
 > Application Data MUST NOT be sent prior to sending the Finished message, except as specified in Section 2.3.
 = check Handshake.DataOnlyAfterFinished
 = check Handshake.DataOnlyWhenOpen
-= row step wait_finished whole even strict write:- => wait_finished whole even strict
-= row step wait_finished whole even strict protected:data => closed whole even strict alert:unexpected_message
+= row step wait_finished whole even strict q0 write:- => wait_finished whole even strict q0
+= row step wait_finished whole even strict q0 protected:data => closed whole even strict q0 alert:unexpected_message
 
 @ 2.1
 > If no common cryptographic parameters can be negotiated, the server MUST abort the handshake with an appropriate alert.
-= row step start whole even strict invalid:handshake_failure => closed whole even strict alert:handshake_failure
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:handshake_failure => closed whole even strict q0 alert:handshake_failure
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 = code answer a ClientHello without 0x0304 with protocol_version, and one that lacks TLS_CHACHA20_POLY1305_SHA256, both x25519 and X25519MLKEM768 in supported_groups, or ecdsa_secp256r1_sha256 with handshake_failure
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
@@ -40,39 +40,39 @@
 @ 4
 > Protocol messages MUST be sent in the order defined in Section 4.4.1 and shown in the diagrams in Section 2.
 = check Handshake.InOrder
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
-= row step retry whole even strict plain:hello => wait_finished whole even strict send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello_retry => retry whole even strict q0 send:retry send:ccs
+= row step retry whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
 = code encode the flight as EncryptedExtensions, Certificate, CertificateVerify, Finished, in that order
 = test a_whole_handshake_and_data_both_ways
 > A peer which receives a handshake message in an unexpected order MUST abort the handshake with an "unexpected_message" alert.
-= row step start whole even strict plain:finished => closed whole even strict alert:unexpected_message
-= row step start whole even strict plain:other => closed whole even strict alert:unexpected_message
-= row step retry whole even strict plain:other => closed whole even strict alert:unexpected_message
-= row step wait_finished whole even strict protected:hello => closed whole even strict alert:unexpected_message
-= row step wait_finished whole even strict protected:key_update => closed whole even strict alert:unexpected_message
-= row step wait_finished whole even strict protected:other => closed whole even strict alert:unexpected_message
-= row step open whole even strict protected:finished => closed whole even strict alert:unexpected_message
-= row step open whole even strict protected:other => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 plain:finished => closed whole even strict q0 alert:unexpected_message
+= row step start whole even strict q0 plain:other => closed whole even strict q0 alert:unexpected_message
+= row step retry whole even strict q0 plain:other => closed whole even strict q0 alert:unexpected_message
+= row step wait_finished whole even strict q0 protected:hello => closed whole even strict q0 alert:unexpected_message
+= row step wait_finished whole even strict q0 protected:key_update => closed whole even strict q0 alert:unexpected_message
+= row step wait_finished whole even strict q0 protected:other => closed whole even strict q0 alert:unexpected_message
+= row step open whole even strict q0 protected:finished => closed whole even strict q0 alert:unexpected_message
+= row step open whole even strict q0 protected:other => closed whole even strict q0 alert:unexpected_message
 = code classify every handshake type other than client_hello, finished and key_update as "other"
 = test other_handshake_messages_are_unexpected
 
 @ 4.1.1
 > If there is no overlap between the received "supported_groups" and the groups supported by the server, then the server MUST abort the handshake with a "handshake_failure" or an "insufficient_security" alert.
-= row step start whole even strict invalid:handshake_failure => closed whole even strict alert:handshake_failure
+= row step start whole even strict q0 invalid:handshake_failure => closed whole even strict q0 alert:handshake_failure
 = code reject a ClientHello whose supported_groups lists neither x25519 nor X25519MLKEM768 with handshake_failure
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
 > If the server selects a PSK, then it MUST also select a key establishment mode from the set indicated by the client's "psk_key_exchange_modes" extension (at present, PSK alone or with (EC)DHE).
 = unused PSK: shioko never selects a PSK; offered PSKs are ignored and a full handshake follows (SPEC 5)
 > If the server selects an (EC)DHE group and the client did not offer a compatible "key_share" extension in the initial ClientHello, the server MUST respond with a HelloRetryRequest (Section 4.1.4) message.
-= row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
+= row step start whole even strict q0 plain:hello_retry => retry whole even strict q0 send:retry send:ccs
 = code treat a ClientHello whose key_share extension has no entry for x25519 or X25519MLKEM768 as hello_retry, and answer with a HelloRetryRequest whose selected_group is x25519 if listed, else X25519MLKEM768
 = test a_hello_retry_request_asks_for_what_is_offered
 = test a_hello_retry_request_and_then_the_handshake
 = test what_a_client_hello_may_offer
 > If the server is unable to negotiate a supported set of parameters (i.e., there is no overlap between the client and server parameters), it MUST abort the handshake with either a "handshake_failure" or "insufficient_security" fatal alert (see Section 6).
-= row step start whole even strict invalid:handshake_failure => closed whole even strict alert:handshake_failure
+= row step start whole even strict q0 invalid:handshake_failure => closed whole even strict q0 alert:handshake_failure
 = code abort with handshake_failure when the ClientHello offers TLS 1.3 but not TLS_CHACHA20_POLY1305_SHA256, x25519 or X25519MLKEM768, or ecdsa_secp256r1_sha256
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
@@ -80,20 +80,20 @@
 @ 4.1.2
 > When a client first connects to a server, it is REQUIRED to send the ClientHello as its first TLS message.
 = peer client: any other first message is refused with unexpected_message
-= row step start whole even strict plain:other => closed whole even strict alert:unexpected_message
-= row step start whole even strict plain:finished => closed whole even strict alert:unexpected_message
-= row step start whole even strict plain:data => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 plain:other => closed whole even strict q0 alert:unexpected_message
+= row step start whole even strict q0 plain:finished => closed whole even strict q0 alert:unexpected_message
+= row step start whole even strict q0 plain:data => closed whole even strict q0 alert:unexpected_message
 > In that case, the client MUST send the same ClientHello without modification, except as follows:
 = peer client: the second ClientHello is parsed and judged afresh; one that lacks a share of the group asked for, or offers early data again, is refused with illegal_parameter
 = code refuse with illegal_parameter a second ClientHello that differs from the first in anything but key_share, early_data, pre_shared_key and padding: legacy_version, random, session id, suites, compression, and every other extension in order
 = test bug_a_changed_second_client_hello_was_served
-= row step retry whole even strict plain:hello_retry => closed whole even strict alert:illegal_parameter
-= row step retry whole even strict plain:hello_early => closed whole even strict alert:illegal_parameter
+= row step retry whole even strict q0 plain:hello_retry => closed whole even strict q0 alert:illegal_parameter
+= row step retry whole even strict q0 plain:hello_early => closed whole even strict q0 alert:illegal_parameter
 > Because TLS 1.3 forbids renegotiation, if a server has negotiated TLS 1.3 and receives a ClientHello at any other time, it MUST terminate the connection with an "unexpected_message" alert.
-= row step wait_finished whole even strict protected:hello => closed whole even strict alert:unexpected_message
-= row step wait_finished whole even strict plain:hello => closed whole even strict alert:unexpected_message
-= row step open whole even strict protected:hello => closed whole even strict alert:unexpected_message
-= row step open whole even strict protected:hello_retry => closed whole even strict alert:unexpected_message
+= row step wait_finished whole even strict q0 protected:hello => closed whole even strict q0 alert:unexpected_message
+= row step wait_finished whole even strict q0 plain:hello => closed whole even strict q0 alert:unexpected_message
+= row step open whole even strict q0 protected:hello => closed whole even strict q0 alert:unexpected_message
+= row step open whole even strict q0 protected:hello_retry => closed whole even strict q0 alert:unexpected_message
 > If a server established a TLS connection with a previous version of TLS and receives a TLS 1.3 ClientHello in a renegotiation, it MUST retain the previous protocol version.
 = unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); no pre-1.3 connection ever exists to renegotiate
 > In particular, it MUST NOT negotiate TLS 1.3.
@@ -121,7 +121,7 @@
 = code reject a ClientHello that offers 0x0304 and whose legacy_compression_methods is not exactly one zero byte, with illegal_parameter; an empty list, below the vector's minimum length of 1, does not parse and gets decode_error
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
-= row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step start whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 > Note that TLS 1.3 servers might receive TLS 1.2 or prior ClientHellos which contain other compression methods and (if negotiating such a prior version) MUST follow the procedures for the appropriate prior version of TLS.
 = unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6), whatever its compression methods
 > Servers MUST ignore unrecognized extensions.
@@ -136,7 +136,7 @@
 = unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6)
 = code reject a ClientHello whose extensions block is malformed or is followed by more bytes, with decode_error
 = test bytes_past_the_extensions_or_an_extension
-= row step start whole even strict invalid:decode_error => closed whole even strict alert:decode_error
+= row step start whole even strict q0 invalid:decode_error => closed whole even strict q0 alert:decode_error
 
 @ 4.1.3
 > In TLS 1.3, the TLS server indicates its version using the "supported_versions" extension (Section 4.2.1), and the legacy_version field MUST be set to 0x0303, which is the version number for TLS 1.2.
@@ -169,7 +169,7 @@
 = test our_hellos_field_by_field
 > Upon receiving a message with type server_hello, implementations MUST first examine the Random value and, if it matches this value, process it as described in Section 4.1.4).
 = peer client: nothing to do; a server_hello sent to shioko is "other" and ends in unexpected_message
-= row step start whole even strict plain:other => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 plain:other => closed whole even strict q0 alert:unexpected_message
 > TLS 1.3 servers which negotiate TLS 1.2 or below in response to a ClientHello MUST set the last 8 bytes of their Random value specially in their ServerHello.
 = unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); no downgrade marker is ever written
 > If negotiating TLS 1.2, TLS 1.3 servers MUST set the last 8 bytes of their Random value to the bytes:
@@ -196,7 +196,7 @@
 = code send a HelloRetryRequest only to a ClientHello that itself carries supported_versions and a key_share extension, and put nothing but supported_versions and key_share in it; a ClientHello without key_share gets missing_extension, and no cookie is ever sent (SPEC 5)
 = test our_hellos_field_by_field
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 > Upon receipt of a HelloRetryRequest, the client MUST check the legacy_version, legacy_session_id_echo, cipher_suite, and legacy_compression_method as specified in Section 4.1.3 and then process the extensions, starting with determining the version using "supported_versions".
 = peer client: nothing to do
 > Clients MUST abort the handshake with an "illegal_parameter" alert if the HelloRetryRequest would not result in any change in the ClientHello.
@@ -204,10 +204,10 @@
 > If a client receives a second HelloRetryRequest in the same connection (i.e., where the ClientHello was itself in response to a HelloRetryRequest), it MUST abort the handshake with an "unexpected_message" alert.
 = peer client: nothing to do; shioko never sends a second HelloRetryRequest
 = check Handshake.AtMostOnce
-= row step retry whole even strict plain:hello_retry => closed whole even strict alert:illegal_parameter
+= row step retry whole even strict q0 plain:hello_retry => closed whole even strict q0 alert:illegal_parameter
 > Otherwise, the client MUST process all extensions in the HelloRetryRequest and send a second updated ClientHello.
 = peer client: a client that sends no second ClientHello is ended at the 10 s handshake deadline with close_notify
-= row step retry whole even strict close:- => closed whole even strict alert:close_notify
+= row step retry whole even strict q0 close:- => closed whole even strict q0 alert:close_notify
 = check Handshake.HandshakeEnds
 > A client which receives a cipher suite that was not offered MUST abort the handshake.
 = peer client: nothing to do; shioko sends 0x1303 only after finding it in the client's list
@@ -215,7 +215,7 @@
 = code write cipher suite 0x1303 in the HelloRetryRequest and in the ServerHello that follows, and refuse a second ClientHello that no longer offers 0x1303 with handshake_failure
 = test our_hellos_field_by_field
 = test a_second_client_hello_without_our_suite_fails
-= row step retry whole even strict plain:hello => wait_finished whole even strict send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step retry whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
 > Upon receiving the ServerHello, clients MUST check that the cipher suite supplied in the ServerHello is the same as that in the HelloRetryRequest and otherwise abort the handshake with an "illegal_parameter" alert.
 = peer client: nothing to do
 > In addition, in its updated ClientHello, the client SHOULD NOT offer any pre-shared keys associated with a hash other than that of the selected cipher suite.
@@ -238,19 +238,19 @@
 = test unknown_values_are_ignored
 > +--------------------------------------------------+-------------+ | Extension | TLS 1.3 | +--------------------------------------------------+-------------+ | server_name [RFC6066] | CH, EE | | | | | max_fragment_length [RFC6066] | CH, EE | | | | | status_request [RFC6066] | CH, CR, CT | | | | | supported_groups [RFC7919] | CH, EE | | | | | signature_algorithms (RFC 8446) | CH, CR | | | | | use_srtp [RFC5764] | CH, EE | | | | | heartbeat [RFC6520] | CH, EE | | | | | application_layer_protocol_negotiation [RFC7301] | CH, EE | | | | | signed_certificate_timestamp [RFC6962] | CH, CR, CT | | | | | client_certificate_type [RFC7250] | CH, EE | | | | | server_certificate_type [RFC7250] | CH, EE | | | | | padding [RFC7685] | CH | | | | | key_share (RFC 8446) | CH, SH, HRR | | | | | pre_shared_key (RFC 8446) | CH, SH | | | | | psk_key_exchange_modes (RFC 8446) | CH | | | | | early_data (RFC 8446) | CH, EE, NST | | | | | cookie (RFC 8446) | CH, HRR | | | | | supported_versions (RFC 8446) | CH, SH, HRR | | | | | certificate_authorities (RFC 8446) | CH, CR | | | | | oid_filters (RFC 8446) | CR | | | | | post_handshake_auth (RFC 8446) | CH | | | | | signature_algorithms_cert (RFC 8446) | CH, CR | +--------------------------------------------------+-------------+ When multiple extensions of different types are present, the extensions MAY appear in any order, with the exception of "pre_shared_key" (Section 4.2.11) which MUST be the last extension in the ClientHello (but can appear anywhere in the ServerHello extensions block).
 = peer client: a ClientHello with pre_shared_key anywhere but last is refused with illegal_parameter (SPEC 5)
-= row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step start whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 > There MUST NOT be more than one extension of the same type in a given extension block.
 = code never encode two extensions of the same type in ServerHello, HelloRetryRequest or EncryptedExtensions
 = test our_hellos_field_by_field
 = test our_messages_are_well_formed
 = code reject a ClientHello that carries the same extension type twice, with illegal_parameter
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step start whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 
 @ 4.2.1
 > Implementations of this specification MUST send this extension in the ClientHello containing all versions of TLS which they are prepared to negotiate (for this specification, that means minimally 0x0304, but if previous versions of TLS are allowed to be negotiated, they MUST be present as well).
 = peer client: a ClientHello without supported_versions is a pre-1.3 hello and is refused with protocol_version (SPEC 2, change 6)
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > If this extension is not present, servers which are compliant with this specification and which also support TLS 1.2 MUST negotiate TLS 1.2 or prior as specified in [RFC5246], even if ClientHello.legacy_version is 0x0304 or later.
 = unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6)
 > If this extension is present in the ClientHello, servers MUST NOT use the ClientHello.legacy_version value for version negotiation and MUST use only the "supported_versions" extension to determine client preferences.
@@ -268,7 +268,7 @@
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
 = test bug_repeated_extension_hid_the_version
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > A server which negotiates a version of TLS prior to TLS 1.3 MUST set ServerHello.version and MUST NOT send the "supported_versions" extension.
 = unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6)
 > A server which negotiates TLS 1.3 MUST respond by sending a "supported_versions" extension containing the selected version value (0x0304).
@@ -287,15 +287,15 @@
 @ 4.2.2
 > When sending the new ClientHello, the client MUST copy the contents of the extension received in the HelloRetryRequest into a "cookie" extension in the new ClientHello.
 = unused cookie: shioko never puts a cookie in a HelloRetryRequest; a ClientHello that carries one is refused with illegal_parameter (SPEC 5)
-= row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
-= row step retry whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step start whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
+= row step retry whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 > Clients MUST NOT use cookies in their initial ClientHello in subsequent connections.
 = unused cookie: shioko never puts a cookie in a HelloRetryRequest; a ClientHello that carries one is refused with illegal_parameter (SPEC 5)
-= row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
-= row step retry whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step start whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
+= row step retry whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 > Servers operating statelessly MUST ignore these records.
 = unused stateless HelloRetryRequest: shioko keeps its state (phase retry) between the two ClientHellos; the ChangeCipherSpec that may come there is dropped all the same
-= row step retry whole even strict plain:ccs => retry whole even strict
+= row step retry whole even strict q0 plain:ccs => retry whole even strict q1
 
 @ 4.2.3
 > The keys found in certificates MUST also be of appropriate type for the signature algorithms they are used with.
@@ -305,7 +305,7 @@
 > Clients which desire the server to authenticate itself via a certificate MUST send the "signature_algorithms" extension.
 = peer client: refused with missing_extension (next sentence)
 > If a server is authenticating via a certificate and the client has not sent a "signature_algorithms" extension, then the server MUST abort the handshake with a "missing_extension" alert (see Section 9.2).
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 = code reject a ClientHello that offers 0x0304 without a signature_algorithms extension, with missing_extension
 = test what_is_refused_and_with_which_alert
 > TLS 1.2 implementations SHOULD also process this extension.
@@ -389,8 +389,8 @@
 > Otherwise, when sending the new ClientHello, the client MUST replace the original "key_share" extension with one containing only a new KeyShareEntry for the group indicated in the selected_group field of the triggering HelloRetryRequest.
 = peer client: a second ClientHello without exactly one share, of the group asked for, is refused with illegal_parameter
 = test x25519mlkem768_shares_that_are_refused
-= row step retry whole even strict plain:hello_retry => closed whole even strict alert:illegal_parameter
-= row step retry whole even strict plain:hello_retry_early => closed whole even strict alert:illegal_parameter
+= row step retry whole even strict q0 plain:hello_retry => closed whole even strict q0 alert:illegal_parameter
+= row step retry whole even strict q0 plain:hello_retry_early => closed whole even strict q0 alert:illegal_parameter
 > This value MUST be in the same group as the KeyShareEntry value offered by the client that the server has selected for the negotiated key exchange.
 = code put one KeyShareEntry in ServerHello answering the client's entry: 0x11EC with an ML-KEM-768 ciphertext and our X25519 share (1120 bytes), or 0x001D with our 32-byte X25519 share
 = test x25519mlkem768_is_chosen_when_offered
@@ -421,8 +421,8 @@
 > If clients offer "pre_shared_key" without a "psk_key_exchange_modes" extension, servers MUST abort the handshake.
 = code reject a ClientHello that has pre_shared_key without psk_key_exchange_modes, with missing_extension
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
-= row step retry whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
+= row step retry whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 > Servers MUST NOT select a key exchange mode that is not listed by the client.
 = unused PSK: shioko never selects a PSK, so never a PSK key exchange mode; offered PSKs are ignored and a full handshake follows (SPEC 5)
 > Servers SHOULD NOT send NewSessionTicket with tickets that are not compatible with the advertised modes; however, if a server does so, the impact will just be that the client's attempts at resumption fail.
@@ -443,25 +443,25 @@
 = unused session tickets and 0-RTT: no ticket is issued and no PSK is selected, so there is no ticket age to validate; early data is always rejected and skipped
 > If it is not, the server SHOULD proceed with the handshake but reject 0-RTT, and SHOULD NOT take any other action that assumes that this ClientHello is fresh.
 = unused session tickets and 0-RTT: there is no ticket age to judge; shioko always proceeds with a full handshake and rejects 0-RTT, skipping its records
-= row step start whole even strict plain:hello_early => wait_finished whole even skipping send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step wait_finished whole even skipping undecryptable:- => wait_finished whole even skipping skip:-
+= row step start whole even strict q0 plain:hello_early => wait_finished whole even skipping q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step wait_finished whole even skipping q0 undecryptable:- => wait_finished whole even skipping q0 skip:-
 > A server which receives an "early_data" extension MUST behave in one of three ways:
-= row step start whole even strict plain:hello_early => wait_finished whole even skipping send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step wait_finished whole even skipping undecryptable:- => wait_finished whole even skipping skip:-
-= row step wait_finished whole even skipping protected:finished => open whole even strict read_keys:data
-= row step start whole even strict plain:hello_retry_early => retry whole even skipping send:retry send:ccs
-= row step retry whole even skipping plain:data => retry whole even skipping skip:-
-= row step retry whole even skipping plain:hello => wait_finished whole even strict send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello_early => wait_finished whole even skipping q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step wait_finished whole even skipping q0 undecryptable:- => wait_finished whole even skipping q0 skip:-
+= row step wait_finished whole even skipping q0 protected:finished => open whole even strict q0 read_keys:data
+= row step start whole even strict q0 plain:hello_retry_early => retry whole even skipping q0 send:retry send:ccs
+= row step retry whole even skipping q0 plain:data => retry whole even skipping q0 skip:-
+= row step retry whole even skipping q0 plain:hello => wait_finished whole even strict q0 send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
 = check Handshake.SkipOnlyEarlyData
 = code classify a ClientHello with an early_data extension as hello_early or hello_retry_early, count the bytes of the records skipped after it, and end the connection with unexpected_message once they pass 16 KB; never send early_data in EncryptedExtensions
 = test early_data_is_skipped_up_to_a_limit
 = test what_a_client_hello_may_offer
 = test our_messages_are_well_formed
-= row step wait_finished whole even skipping invalid:bad_record_mac => closed whole even strict alert:bad_record_mac
+= row step wait_finished whole even skipping q0 invalid:bad_record_mac => closed whole even strict q0 alert:bad_record_mac
 > A client MUST NOT include the "early_data" extension in its followup ClientHello.
 = peer client: a second ClientHello that offers early data again is refused with illegal_parameter
-= row step retry whole even strict plain:hello_early => closed whole even strict alert:illegal_parameter
-= row step retry whole even skipping plain:hello_early => closed whole even strict alert:illegal_parameter
+= row step retry whole even strict q0 plain:hello_early => closed whole even strict q0 alert:illegal_parameter
+= row step retry whole even skipping q0 plain:hello_early => closed whole even strict q0 alert:illegal_parameter
 > In order to accept early data, the server MUST have accepted a PSK cipher suite and selected the first key offered in the client's "pre_shared_key" extension.
 = unused 0-RTT: early data is never accepted, no early_data extension is ever sent in EncryptedExtensions, and the early records are skipped (SPEC 5)
 > In addition, it MUST verify that the following values are the same as those associated with the selected PSK:
@@ -471,12 +471,12 @@
 > If any of these checks fail, the server MUST NOT respond with the extension and must discard all the first-flight data using one of the first two mechanisms listed above (thus falling back to 1-RTT or 2-RTT).
 = code never send early_data in EncryptedExtensions
 = test our_messages_are_well_formed
-= row step start whole even strict plain:hello_early => wait_finished whole even skipping send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step wait_finished whole even skipping undecryptable:- => wait_finished whole even skipping skip:-
-= row step wait_finished whole even skipping protected:finished => open whole even strict read_keys:data
-= row step start whole even strict plain:hello_retry_early => retry whole even skipping send:retry send:ccs
-= row step retry whole even skipping plain:data => retry whole even skipping skip:-
-= row step retry whole even skipping plain:hello => wait_finished whole even strict send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello_early => wait_finished whole even skipping q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step wait_finished whole even skipping q0 undecryptable:- => wait_finished whole even skipping q0 skip:-
+= row step wait_finished whole even skipping q0 protected:finished => open whole even strict q0 read_keys:data
+= row step start whole even strict q0 plain:hello_retry_early => retry whole even skipping q0 send:retry send:ccs
+= row step retry whole even skipping q0 plain:data => retry whole even skipping q0 skip:-
+= row step retry whole even skipping q0 plain:hello => wait_finished whole even strict q0 send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
 = check Handshake.SkipOnlyEarlyData
 = code raise hello_early or hello_retry_early for a servable ClientHello that carries early_data, and count the size of every skipped record against a 16 KB allowance; past it the connection ends with unexpected_message
 = test early_data_is_skipped_up_to_a_limit
@@ -506,7 +506,7 @@
 > If no acceptable PSKs are found, the server SHOULD perform a non-PSK handshake if possible.
 = code serve a ClientHello that carries pre_shared_key and psk_key_exchange_modes with the full certificate handshake when it meets the other conditions of SPEC 5 (SPEC 5: a full handshake follows)
 = test what_a_client_hello_may_offer
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
 > If backward compatibility is important, client-provided, externally established PSKs SHOULD influence cipher suite selection.
 = unused external PSKs: none can be configured; the suite is always TLS_CHACHA20_POLY1305_SHA256
 > Prior to accepting PSK key establishment, the server MUST validate the corresponding binder value (see Section 4.2.11.2 below).
@@ -528,7 +528,7 @@
 > Servers MUST check that it is the last extension and otherwise fail the handshake with an "illegal_parameter" alert.
 = code reject a ClientHello in which pre_shared_key is present but is not the last extension, with illegal_parameter
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step start whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 
 @ 4.2.11.1
 > Clients MUST NOT attempt to use tickets which have ages greater than the "ticket_lifetime" value which was provided with the ticket.
@@ -540,8 +540,8 @@
 
 @ 4.3.1
 > In all handshakes, the server MUST send the EncryptedExtensions message immediately after the ServerHello message.
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step retry whole even strict plain:hello => wait_finished whole even strict send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step retry whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
 = check Handshake.InOrder
 = code encode the flight as EncryptedExtensions, Certificate, CertificateVerify, Finished in that order, so that EncryptedExtensions is the first handshake message after ServerHello
 = test a_whole_handshake_and_data_both_ways
@@ -567,8 +567,8 @@
 
 @ 4.4.2
 > The server MUST send a Certificate message whenever the agreed-upon key exchange method uses certificates for authentication (this includes all key exchange methods defined in this document except PSK).
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step retry whole even strict plain:hello => wait_finished whole even strict send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step retry whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
 = code include a Certificate message in the flight of every handshake
 = test a_whole_handshake_and_data_both_ways
 > The client MUST send a Certificate message if and only if the server has requested client authentication via a CertificateRequest message (Section 4.3.2).
@@ -669,8 +669,8 @@
 
 @ 4.4.3
 > Servers MUST send this message when authenticating via a certificate.
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step retry whole even strict plain:hello => wait_finished whole even strict send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step retry whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
 = code include a CertificateVerify message in the flight of every handshake
 = test a_whole_handshake_and_data_both_ways
 > Clients MUST send this message whenever authenticating via a certificate (i.e., when the Certificate message is non-empty).
@@ -701,16 +701,16 @@
 
 @ 4.4.4
 > Recipients of Finished messages MUST verify that the contents are correct and if incorrect MUST terminate the connection with a "decrypt_error" alert.
-= row step wait_finished whole even strict protected:finished => open whole even strict read_keys:data
-= row step wait_finished whole even strict protected:finished_bad => closed whole even strict alert:decrypt_error
+= row step wait_finished whole even strict q0 protected:finished => open whole even strict q0 read_keys:data
+= row step wait_finished whole even strict q0 protected:finished_bad => closed whole even strict q0 alert:decrypt_error
 = code compute the expected client verify_data as HMAC-SHA256(finished_key of client_handshake_traffic_secret, transcript hash through the server Finished), compare all 32 bytes in constant time, and raise finished_bad on any difference
 = test a_wrong_finished_is_decrypt_error
 = test the_simple_handshake_of_rfc8448
 = test ct_eq_is_equality
 = test a_finished_wrong_in_its_last_byte_is_decrypt_error
 > Any records following a Finished message MUST be encrypted under the appropriate application traffic key as described in Section 7.2.
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step wait_finished whole even strict protected:finished => open whole even strict read_keys:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step wait_finished whole even strict q0 protected:finished => open whole even strict q0 read_keys:data
 = check Handshake.KeysMatchPhase
 = check Handshake.RightKeys
 = check Handshake.PeerCanDecrypt
@@ -765,12 +765,12 @@
 
 @ 4.6.3
 > Implementations that receive a KeyUpdate message prior to receiving a Finished message MUST terminate the connection with an "unexpected_message" alert.
-= row step wait_finished whole even strict protected:key_update => closed whole even strict alert:unexpected_message
-= row step wait_finished whole even strict protected:key_update_request => closed whole even strict alert:unexpected_message
-= row step start whole even strict plain:key_update => closed whole even strict alert:unexpected_message
-= row step retry whole even strict plain:key_update => closed whole even strict alert:unexpected_message
+= row step wait_finished whole even strict q0 protected:key_update => closed whole even strict q0 alert:unexpected_message
+= row step wait_finished whole even strict q0 protected:key_update_request => closed whole even strict q0 alert:unexpected_message
+= row step start whole even strict q0 plain:key_update => closed whole even strict q0 alert:unexpected_message
+= row step retry whole even strict q0 plain:key_update => closed whole even strict q0 alert:unexpected_message
 > After sending a KeyUpdate message, the sender SHALL send all its traffic using the next generation of keys, computed as described in Section 7.2.
-= row step open whole owed strict write:- => open whole even strict send:key_update write_keys:next send:data
+= row step open whole owed strict q0 write:- => open whole even strict q0 send:key_update write_keys:next send:data
 = check Handshake.PeerCanDecrypt
 = code after sending KeyUpdate derive server_application_traffic_secret_N+1 = HKDF-Expand-Label(secret_N, "traffic upd", "", 32), take key and iv from it and restart the write sequence number at 0
 = test key_updates_from_the_client
@@ -778,52 +778,58 @@
 = test the_next_generation_by_hand
 = test the_next_generation_starts_over
 > Upon receiving a KeyUpdate, the receiver MUST update its receiving keys.
-= row step open whole even strict protected:key_update => open whole even strict read_keys:next
-= row step open whole even strict protected:key_update_request => open whole owed strict read_keys:next
+= row step open whole even strict q0 protected:key_update => open whole even strict q1 read_keys:next
+= row step open whole even strict q0 protected:key_update_request => open whole owed strict q1 read_keys:next
 = code on a KeyUpdate derive client_application_traffic_secret_N+1 = HKDF-Expand-Label(secret_N, "traffic upd", "", 32), take key and iv from it and restart the read sequence number at 0
 = test key_updates_from_the_client
 = test the_next_generation_by_hand
+= deviation SPEC 5, known departures: after 32 records in a row that carry nothing (a dropped ChangeCipherSpec, a KeyUpdate, an empty application data record) the next is refused with unexpected_message, as OpenSSL and BoringSSL refuse it
+= check Handshake.QuietCapped
+= test records_with_nothing_in_them_are_capped
 = test the_next_generation_starts_over
 > If an implementation receives any other value, it MUST terminate the connection with an "illegal_parameter" alert.
 = code reject a KeyUpdate whose request_update is neither 0 nor 1, with illegal_parameter
 = test key_updates_from_the_client
 = test our_messages_are_well_formed
-= row step open whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step open whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 > If the request_update field is set to "update_requested", then the receiver MUST send a KeyUpdate of its own with request_update set to "update_not_requested" prior to sending its next Application Data record.
-= row step open whole even strict protected:key_update_request => open whole owed strict read_keys:next
-= row step open whole owed strict write:- => open whole even strict send:key_update write_keys:next send:data
+= row step open whole even strict q0 protected:key_update_request => open whole owed strict q1 read_keys:next
+= row step open whole owed strict q0 write:- => open whole even strict q0 send:key_update write_keys:next send:data
 = check Handshake.KeyUpdateAnswered
 = code encode shioko's own KeyUpdate with request_update = update_not_requested (0)
 = test key_updates_from_the_client
 = test our_messages_are_well_formed
 > Both sender and receiver MUST encrypt their KeyUpdate messages with the old keys.
-= row step open whole owed strict write:- => open whole even strict send:key_update write_keys:next send:data
-= row step open whole even strict protected:key_update => open whole even strict read_keys:next
+= row step open whole owed strict q0 write:- => open whole even strict q0 send:key_update write_keys:next send:data
+= row step open whole even strict q0 protected:key_update => open whole even strict q1 read_keys:next
 = check Handshake.RightKeys
 = check Handshake.PeerCanDecrypt
 > Additionally, both sides MUST enforce that a KeyUpdate with the old key is received before accepting any messages encrypted with the new key.
-= row step open whole even strict protected:key_update => open whole even strict read_keys:next
-= row step open whole even strict undecryptable:- => closed whole even strict alert:bad_record_mac
+= row step open whole even strict q0 protected:key_update => open whole even strict q1 read_keys:next
+= row step open whole even strict q0 undecryptable:- => closed whole even strict q0 alert:bad_record_mac
 = check Handshake.KeysMatchPhase
 = code decrypt every record only under the current read keys; never try the next key generation before a KeyUpdate has been read under the current one
 = test next_keys_only_after_a_key_update
 
 @ 5
 > An implementation may receive an unencrypted record of type change_cipher_spec consisting of the single byte value 0x01 at any time after the first ClientHello message has been sent or received and before the peer's Finished message has been received and MUST simply drop it without further processing.
-= row step retry whole even strict plain:ccs => retry whole even strict
-= row step wait_finished whole even strict plain:ccs => wait_finished whole even strict
+= row step retry whole even strict q0 plain:ccs => retry whole even strict q1
+= row step wait_finished whole even strict q0 plain:ccs => wait_finished whole even strict q1
 = code raise the ccs event only for an unencrypted record of type 20 whose fragment is exactly the one byte 0x01, and recognise it before trying to decrypt
 = test change_cipher_spec_only_where_it_belongs
+= deviation SPEC 5, known departures: after 32 records in a row that carry nothing (a dropped ChangeCipherSpec, a KeyUpdate, an empty application data record) the next is refused with unexpected_message, as OpenSSL and BoringSSL refuse it
+= check Handshake.QuietCapped
+= test records_with_nothing_in_them_are_capped
 = deviation between the pieces of a split handshake message the dummy ChangeCipherSpec is refused instead of dropped (retry partial and wait_finished partial answer plain:ccs with unexpected_message): SPEC 5 "nothing may come between the pieces", check SplitMessageNotInterleaved, following RFC 5.1 rather than "at any time"
 > An implementation which receives any other change_cipher_spec value or which receives a protected change_cipher_spec record MUST abort the handshake with an "unexpected_message" alert.
-= row step wait_finished whole even strict protected:ccs => closed whole even strict alert:unexpected_message
-= row step open whole even strict protected:ccs => closed whole even strict alert:unexpected_message
+= row step wait_finished whole even strict q0 protected:ccs => closed whole even strict q0 alert:unexpected_message
+= row step open whole even strict q0 protected:ccs => closed whole even strict q0 alert:unexpected_message
 = code treat an unencrypted change_cipher_spec record whose fragment is not exactly the one byte 0x01 as invalid with unexpected_message
 = test change_cipher_spec_only_where_it_belongs
-= row step wait_finished whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
+= row step wait_finished whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
 > If an implementation detects a change_cipher_spec record received before the first ClientHello message or after the peer's Finished message, it MUST be treated as an unexpected record type (though stateless servers may not be able to distinguish these cases from allowed cases).
-= row step start whole even strict plain:ccs => closed whole even strict alert:unexpected_message
-= row step open whole even strict plain:ccs => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 plain:ccs => closed whole even strict q0 alert:unexpected_message
+= row step open whole even strict q0 plain:ccs => closed whole even strict q0 alert:unexpected_message
 > Implementations MUST NOT send record types not defined in this document unless negotiated by some extension.
 = check Handshake.StepIsTotal
 = code write only records of content type 20, 21, 22 and 23
@@ -832,26 +838,26 @@
 = code treat a record whose content type (outer when unencrypted, inner after decryption) is not 20, 21, 22 or 23 as invalid with unexpected_message
 = test bug_unknown_record_type_got_decode_error
 = test records_are_framed_and_checked
-= row step start whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
-= row step open whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
+= row step open whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
 
 @ 5.1
 > Any future content types MUST specify appropriate rules.
 = info requirement on future content type specifications
 > - Handshake messages MUST NOT be interleaved with other record types.
 = check Handshake.SplitMessageNotInterleaved
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
 = code never put another record between the records of one of shioko's own handshake messages: ServerHello, HelloRetryRequest and KeyUpdate each fit one record and the records of the flight are written back to back under the write lock
 = test a_flight_larger_than_a_record
 > That is, if a handshake message is split over two or more records, there MUST NOT be any other records between them.
 = check Handshake.SplitMessageNotInterleaved
 = check Handshake.MessagesNotInterleaved
-= row step start partial even strict plain:alert => closed whole even strict alert:unexpected_message
-= row step wait_finished partial even strict protected:data => closed whole even strict alert:unexpected_message
-= row step open partial even strict protected:data => closed whole even strict alert:unexpected_message
+= row step start partial even strict q0 plain:alert => closed whole even strict q0 alert:unexpected_message
+= row step wait_finished partial even strict q0 protected:data => closed whole even strict q0 alert:unexpected_message
+= row step open partial even strict q0 protected:data => closed whole even strict q0 alert:unexpected_message
 > - Handshake messages MUST NOT span key changes.
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step open whole owed strict write:- => open whole even strict send:key_update write_keys:next send:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step open whole owed strict q0 write:- => open whole even strict q0 send:key_update write_keys:next send:data
 = check Handshake.PeerCanDecrypt
 = code end the record at the end of ServerHello, of the server Finished and of each KeyUpdate, so that no handshake message of ours continues under other keys
 = test key_updates_from_the_client
@@ -859,11 +865,11 @@
 > Implementations MUST verify that all messages immediately preceding a key change align with a record boundary; if not, then they MUST terminate the connection with an "unexpected_message" alert.
 = code refuse a record in which any byte follows the end of a ClientHello, a client Finished or a KeyUpdate, with unexpected_message (SPEC 5: each message must end its record)
 = test a_client_hello_in_pieces_and_how_not_to
-= row step wait_finished whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
-= row step open whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
+= row step wait_finished whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
+= row step open whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
 > Because the ClientHello, EndOfEarlyData, ServerHello, Finished, and KeyUpdate messages can immediately precede a key change, implementations MUST send these messages in alignment with a record boundary.
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step open whole owed strict write:- => open whole even strict send:key_update write_keys:next send:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step open whole owed strict q0 write:- => open whole even strict q0 send:key_update write_keys:next send:data
 = code let ServerHello, HelloRetryRequest, the server Finished and KeyUpdate each be the last bytes of their record
 = test key_updates_from_the_client
 = test a_whole_handshake_and_data_both_ways
@@ -896,8 +902,8 @@
 > An endpoint that receives a record that exceeds this length MUST terminate the connection with a "record_overflow" alert.
 = code treat a record of type 20, 21 or 22 (never protected) whose length field exceeds 2^14 as invalid with record_overflow, before reading its body; a record of type 23 is a TLSCiphertext and has the limit of 2^14 + 256 (section 5.2)
 = test bug_unprotected_record_could_exceed_2_14
-= row step start whole even strict invalid:record_overflow => closed whole even strict alert:record_overflow
-= row step retry whole even strict invalid:record_overflow => closed whole even strict alert:record_overflow
+= row step start whole even strict q0 invalid:record_overflow => closed whole even strict q0 alert:record_overflow
+= row step retry whole even strict q0 invalid:record_overflow => closed whole even strict q0 alert:record_overflow
 > In order to maximize backward compatibility, a record containing an initial ClientHello SHOULD have version 0x0301 (reflecting TLS 1.0) and a record containing a second ClientHello or a ServerHello MUST have version 0x0303 (reflecting TLS 1.2).
 = peer client: nothing to do; the record version of a ClientHello is ignored
 = code write legacy_record_version 0x0303 in the records that carry ServerHello and HelloRetryRequest
@@ -907,9 +913,9 @@
 = check Handshake.RightKeys
 = check Handshake.DataOnlyAfterFinished
 = check Handshake.DataOnlyWhenOpen
-= row step start whole even strict write:- => start whole even strict
-= row step wait_finished whole even strict write:- => wait_finished whole even strict
-= row step open whole even strict plain:data => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 write:- => start whole even strict q0
+= row step wait_finished whole even strict q0 write:- => wait_finished whole even strict q0
+= row step open whole even strict q0 plain:data => closed whole even strict q0 alert:unexpected_message
 
 @ 5.2
 > The length MUST NOT exceed 2^14 + 256 bytes.
@@ -917,12 +923,12 @@
 = test large_data_goes_in_records_of_16k_at_most
 = test our_records_have_no_padding
 > An endpoint that receives a record that exceeds this length MUST terminate the connection with a "record_overflow" alert.
-= row step open whole even strict invalid:record_overflow => closed whole even strict alert:record_overflow
+= row step open whole even strict q0 invalid:record_overflow => closed whole even strict q0 alert:record_overflow
 = code reject a protected record whose length field exceeds 2^14 + 256 with record_overflow, before reading its body
 = test records_are_framed_and_checked
 > If the decryption fails, the receiver MUST terminate the connection with a "bad_record_mac" alert.
-= row step open whole even strict undecryptable:- => closed whole even strict alert:bad_record_mac
-= row step wait_finished whole even strict undecryptable:- => closed whole even strict alert:bad_record_mac
+= row step open whole even strict q0 undecryptable:- => closed whole even strict q0 alert:bad_record_mac
+= row step wait_finished whole even strict q0 undecryptable:- => closed whole even strict q0 alert:bad_record_mac
 = check Handshake.SkipOnlyEarlyData
 = code fail with bad_record_mac whenever AEAD opening of a record fails; the one exception is refused early data, which is skipped as RFC 8446 4.2.10 requires, up to 16 KB (SPEC section 5)
 = test records_under_old_keys_are_bad_record_mac
@@ -930,7 +936,7 @@
 > An AEAD algorithm used in TLS 1.3 MUST NOT produce an expansion greater than 255 octets.
 = info constraint on the AEAD algorithms admitted to TLS 1.3; the one suite used, ChaCha20-Poly1305, expands a record by 16 octets
 > An endpoint that receives a record from its peer with TLSCiphertext.length larger than 2^14 + 256 octets MUST terminate the connection with a "record_overflow" alert.
-= row step open whole even strict invalid:record_overflow => closed whole even strict alert:record_overflow
+= row step open whole even strict q0 invalid:record_overflow => closed whole even strict q0 alert:record_overflow
 = code reject a protected record whose length field exceeds 2^14 + 256 with record_overflow, before reading its body
 = test records_are_framed_and_checked
 
@@ -958,14 +964,14 @@
 = code reject a decrypted Handshake or Alert record whose content is empty with unexpected_message
 = test bug_empty_alert_got_the_wrong_alert
 = test a_client_hello_in_pieces_and_how_not_to
-= row step open whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
+= row step open whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
 > Implementations MUST limit their scanning to the cleartext returned from the AEAD decryption.
 = code find the content type by scanning back from the end of the AEAD output only (Vec::last and Vec::pop on the decrypted bytes, no indexing), never past the start of the cleartext
 = test padding_is_stripped_and_content_must_have_a_type
 > If a receiving implementation does not find a non-zero octet in the cleartext, it MUST terminate the connection with an "unexpected_message" alert.
 = code reject a decrypted record that is empty or all zero octets with unexpected_message
 = test padding_is_stripped_and_content_must_have_a_type
-= row step open whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
+= row step open whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
 > The presence of padding does not change the overall record size limitations: the full encoded TLSInnerPlaintext MUST NOT exceed 2^14 + 1 octets.
 = code split outgoing application data and our own handshake messages so that no record carries more than 2^14 octets of content (SPEC section 5)
 = test large_data_goes_in_records_of_16k_at_most
@@ -973,7 +979,7 @@
 = code reject a record whose AEAD output (content, type and padding together) exceeds 2^14 + 1 octets with record_overflow
 = test bug_padding_did_not_count_towards_the_limit
 = test padding_is_stripped_and_content_must_have_a_type
-= row step open whole even strict invalid:record_overflow => closed whole even strict alert:record_overflow
+= row step open whole even strict q0 invalid:record_overflow => closed whole even strict q0 alert:record_overflow
 
 @ 5.5
 > Implementations SHOULD do a key update as described in Section 4.6.3 prior to reaching these limits.
@@ -981,14 +987,14 @@
 
 @ 6
 > Upon receiving such an alert, the TLS implementation SHOULD indicate end-of-data to the application.
-= row step open whole even strict protected:close_notify => closed whole even strict alert:close_notify
+= row step open whole even strict q0 protected:close_notify => closed whole even strict q0 alert:close_notify
 = code after a received close_notify, reads on the TLS stream return end-of-data (Ok(0)), not an error
 = test bug_injected_close_notify_looked_like_an_orderly_end
 = test bug_error_alerts_looked_like_a_clean_close
 = test alerts_from_the_client
 > Upon receiving an error alert, the TLS implementation SHOULD indicate an error to the application and MUST NOT allow any further data to be sent or received on the connection.
-= row step open whole even strict protected:alert => closed whole even strict
-= row step wait_finished whole even strict protected:alert => closed whole even strict
+= row step open whole even strict q0 protected:alert => closed whole even strict q0
+= row step wait_finished whole even strict q0 protected:alert => closed whole even strict q0
 = check Handshake.ClosedIsFinal
 = code after a received error alert, reads and writes on the TLS stream return an error, distinct from end-of-data
 = test bug_error_alerts_looked_like_a_clean_close
@@ -1003,41 +1009,41 @@
 = test our_messages_are_well_formed
 = code classify a received alert by its description alone; the level byte is not looked at
 = test alerts_from_the_client
-= row step open whole even strict protected:alert => closed whole even strict
+= row step open whole even strict q0 protected:alert => closed whole even strict q0
 > Unknown Alert types MUST be treated as error alerts.
 = code map every received alert description other than close_notify, known or unknown, to the alert event
 = test alerts_from_the_client
-= row step open whole even strict protected:alert => closed whole even strict
+= row step open whole even strict q0 protected:alert => closed whole even strict q0
 > Peers which receive a message which cannot be parsed according to the syntax (e.g., have a length extending beyond the message boundary or contain an out-of-range length) MUST terminate the connection with a "decode_error" alert.
 = code fail with decode_error when a handshake message or an extension does not parse: a length running past its container, an out-of-range length, trailing bytes
 = test what_is_refused_and_with_which_alert
 = test bug_trailing_bytes_in_list_extensions_were_accepted
 = test bytes_past_the_extensions_or_an_extension
 = test our_messages_are_well_formed
-= row step start whole even strict invalid:decode_error => closed whole even strict alert:decode_error
-= row step open whole even strict invalid:decode_error => closed whole even strict alert:decode_error
+= row step start whole even strict q0 invalid:decode_error => closed whole even strict q0 alert:decode_error
+= row step open whole even strict q0 invalid:decode_error => closed whole even strict q0 alert:decode_error
 > Peers which receive a message which is syntactically correct but semantically invalid (e.g., a DHE share of p - 1, or an invalid enum) MUST terminate the connection with an "illegal_parameter" alert.
 = code fail with illegal_parameter when a message parses but its content is not allowed, e.g. a KeyUpdate whose request_update is neither 0 nor 1, or a ClientHello whose legacy_compression_methods is not exactly one zero byte
 = test what_is_refused_and_with_which_alert
 = test key_updates_from_the_client
-= row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
-= row step open whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step start whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
+= row step open whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 
 @ 6.1
 > Any data received after a closure alert has been received MUST be ignored.
-= row step open whole even strict protected:close_notify => closed whole even strict alert:close_notify
-= row step closed whole even strict protected:data => closed whole even strict
+= row step open whole even strict q0 protected:close_notify => closed whole even strict q0 alert:close_notify
+= row step closed whole even strict q0 protected:data => closed whole even strict q0
 = check Handshake.ClosedIsFinal
 > This alert SHOULD be followed by a "close_notify".
 = unused user_canceled: shioko never sends it (it is not in the spec's Alerts set); one received is the generic alert event and closes the connection at once, without waiting for a close_notify
 > Any data received after a closure alert has been received MUST be ignored.
-= row step open whole even strict protected:close_notify => closed whole even strict alert:close_notify
-= row step closed whole even strict protected:data => closed whole even strict
+= row step open whole even strict q0 protected:close_notify => closed whole even strict q0 alert:close_notify
+= row step closed whole even strict q0 protected:data => closed whole even strict q0
 = check Handshake.ClosedIsFinal
 > Each party MUST send a "close_notify" alert before closing its write side of the connection, unless it has already sent some error alert.
-= row step open whole even strict close:- => closed whole even strict alert:close_notify
-= row step start whole even strict close:- => closed whole even strict alert:close_notify
-= row step open whole even strict protected:close_notify => closed whole even strict alert:close_notify
+= row step open whole even strict q0 close:- => closed whole even strict q0 alert:close_notify
+= row step start whole even strict q0 close:- => closed whole even strict q0 alert:close_notify
+= row step open whole even strict q0 protected:close_notify => closed whole even strict q0 alert:close_notify
 = code feed the close event, which sends close_notify, when the application is done, on every deadline and when the client's stream ends; the lost event, which sends nothing, is only for a failed transport that cannot be written to any more (SPEC section 5)
 = test bug_close_notify_was_missing_on_shutdown
 = test the_end_of_the_client_stream_is_answered
@@ -1050,13 +1056,13 @@
 > Upon transmission or receipt of a fatal alert message, both parties MUST immediately close the connection.
 = check Handshake.AlertCloses
 = check Handshake.AlertIsLast
-= row step open whole even strict protected:alert => closed whole even strict
+= row step open whole even strict q0 protected:alert => closed whole even strict q0
 > Whenever an implementation encounters a fatal error condition, it SHOULD send an appropriate fatal alert and MUST close the connection without sending or receiving any additional data.
 = check Handshake.AlertCloses
 = check Handshake.AlertIsLast
 = check Handshake.ClosedIsFinal
-= row step open whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
-= row step wait_finished whole even strict protected:finished_bad => closed whole even strict alert:decrypt_error
+= row step open whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
+= row step wait_finished whole even strict q0 protected:finished_bad => closed whole even strict q0 alert:decrypt_error
 > In the rest of this specification, when the phrases "terminate the connection" and "abort the handshake" are used without a specific alert it means that the implementation SHOULD send the alert indicated by the descriptions below.
 = info defines wording used in the rest of the RFC
 = code where the RFC names no alert for a failure, the caller passes in the invalid event the section 6.2 alert whose description fits
@@ -1064,7 +1070,7 @@
 = test what_is_refused_and_with_which_alert
 > The phrases "terminate the connection with an X alert" and "abort the handshake with an X alert" mean that the implementation MUST send alert X if it sends any alert.
 = check Handshake.AtMostOnce
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 = code the caller names in the invalid event exactly the alert the RFC specifies for that failure; Step then sends that alert and no other
 = test same_as_the_spec_on_every_input
 = test bug_unknown_record_type_got_decode_error
@@ -1102,7 +1108,7 @@
 = test x25519_rfc7748
 = test wycheproof_x25519
 = test an_all_zero_share_is_illegal
-= row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
+= row step start whole even strict q0 invalid:illegal_parameter => closed whole even strict q0 alert:illegal_parameter
 > If implementors use an alternative implementation of these elliptic curves, they SHOULD perform the additional checks specified in Section 7 of [RFC7748].
 = unused an alternative implementation of the curves: X25519 is the RFC 7748 ladder from libcrux-curve25519 (SPEC section 7), so the extra checks of RFC 7748 section 7 are not called for
 
@@ -1162,15 +1168,15 @@
 = code refuse a ClientHello without supported_versions, or whose list lacks 0x0304, with protocol_version
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > - "signature_algorithms" is REQUIRED for certificate authentication.
 = code refuse a ClientHello without signature_algorithms with missing_extension
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 > - "supported_groups" is REQUIRED for ClientHello messages using DHE or ECDHE key exchange.
 = code refuse a ClientHello without a supported_groups extension with missing_extension
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 > - "key_share" is REQUIRED for DHE or ECDHE key exchange.
 = code refuse a ClientHello without a key_share extension with missing_extension; an empty client_shares list is allowed and leads to HelloRetryRequest
 = test what_is_refused_and_with_which_alert
@@ -1179,26 +1185,26 @@
 = code send key_share in ServerHello (our share) and in HelloRetryRequest (the selected group)
 = test our_hellos_field_by_field
 = test a_hello_retry_request_and_then_the_handshake
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
-= row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
+= row step start whole even strict q0 plain:hello_retry => retry whole even strict q0 send:retry send:ccs
 > - "pre_shared_key" is REQUIRED for PSK key agreement.
 = unused PSK key agreement: offered PSKs are ignored and a full handshake follows; pre_shared_key anywhere but last in the ClientHello gets illegal_parameter (SPEC section 5)
 > - "psk_key_exchange_modes" is REQUIRED for PSK key agreement.
 = unused PSK key agreement: offered PSKs are ignored and a full handshake follows; pre_shared_key without psk_key_exchange_modes gets missing_extension (SPEC section 5)
 > Such a ClientHello message MUST meet the following requirements:
 = peer client: refused with missing_extension when signature_algorithms or key_share is absent (SPEC section 5); the cases that turn on supported_groups are not settled, see the gap two sentences below
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 > - If not containing a "pre_shared_key" extension, it MUST contain both a "signature_algorithms" extension and a "supported_groups" extension.
 = peer client: without signature_algorithms, refused with missing_extension, with or without pre_shared_key since PSKs are ignored (SPEC section 5); without supported_groups, not settled, see the gap two sentences below
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 > - If containing a "supported_groups" extension, it MUST also contain a "key_share" extension, and vice versa.
 = peer client: supported_groups without key_share is refused with missing_extension (SPEC section 5); key_share without supported_groups is not settled, see the gap in the next sentence
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 > Servers receiving a ClientHello which does not conform to these requirements MUST abort the handshake with a "missing_extension" alert.
 = code refuse with missing_extension a TLS 1.3 ClientHello, first or second, that lacks signature_algorithms or key_share (SPEC section 5)
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
-= row step retry whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
+= row step retry whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 = code refuse a ClientHello that lacks signature_algorithms, supported_groups or key_share with missing_extension
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
@@ -1209,7 +1215,7 @@
 = code refuse a ClientHello without server_name with missing_extension; unrecognized_name is only for a name we have no certificate for (SPEC section 5)
 = test refused_hellos_get_the_alert_of_the_plan
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
+= row step start whole even strict q0 invalid:missing_extension => closed whole even strict q0 alert:missing_extension
 
 @ 9.3
 > This section describes invariants that TLS endpoints and middleboxes MUST follow.
@@ -1244,7 +1250,7 @@
 @ A.1
 > If clients need to send such alerts, they SHOULD first rekey to the handshake keys if possible.
 = peer client: a cleartext alert that arrives after our ServerHello and before the client Finished is taken as the client's alert, as this paragraph allows: the connection ends with nothing said back
-= row step wait_finished whole even strict plain:alert => closed whole even strict
+= row step wait_finished whole even strict q0 plain:alert => closed whole even strict q0
 = test bug_unencrypted_alert_during_the_handshake_was_answered
 
 @ B
@@ -1295,7 +1301,7 @@
 = test records_are_framed_and_checked
 > In order to maximize interoperability with older endpoints, implementations that negotiate the use of TLS 1.0-1.2 SHOULD set the record layer version number to the negotiated version for the ServerHello and all records thereafter.
 = unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer TLS 1.3 is refused with protocol_version (SPEC section 2, change 6)
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > For maximum compatibility with previously non-standard behavior and misconfigured deployments, all implementations SHOULD support validation of certification paths based on the expectations in this document, even when handling prior TLS versions' handshakes (see Section 4.4.2.2).
 = unused validation of certification paths, and prior TLS versions: shioko validates no certificate and negotiates no earlier version
 > Because TLS 1.3 always hashes in the transcript up to the server Finished, implementations which support both TLS 1.3 and earlier versions SHOULD indicate the use of the Extended Master Secret extension in their APIs whenever TLS 1.3 is used.
@@ -1310,21 +1316,21 @@
 = peer client: nothing to do; shioko only ever answers with TLS 1.3
 > Multiple connection attempts may be required in order to negotiate a backward-compatible connection; however, this practice is vulnerable to downgrade attacks and is NOT RECOMMENDED.
 = peer client: nothing to do; a fallback ClientHello that no longer offers TLS 1.3 is refused with protocol_version
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 
 @ D.2
 > If the "supported_versions" extension is present, the server MUST negotiate using that extension as described in Section 4.2.1.
 = code when supported_versions is present, decide the version from it alone: TLS 1.3 if it lists 0x0304, otherwise protocol_version; legacy_version plays no part beyond the 0x0300 check of appendix D.5
 = test what_is_refused_and_with_which_alert
 = test what_a_client_hello_may_offer
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > If the "supported_versions" extension is not present, the server MUST negotiate the minimum of ClientHello.legacy_version and TLS 1.2.
 = unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer TLS 1.3 is refused with protocol_version (SPEC section 2, change 6); this is the case of the next entry
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > If the "supported_versions" extension is absent and the server only supports versions greater than ClientHello.legacy_version, the server MUST abort the handshake with a "protocol_version" alert.
 = code refuse a ClientHello without supported_versions with protocol_version, whatever its legacy_version
 = test what_is_refused_and_with_which_alert
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > Servers will receive various TLS 1.x versions in this field, but its value MUST always be ignored.
 = code do not use TLSPlaintext.legacy_record_version for anything: a ClientHello record marked 0x0301, 0x0302, 0x0303, 0x0304 or any other value is processed alike (SPEC section 5: the version field is ignored)
 = test bug_record_version_was_not_ignored
@@ -1340,9 +1346,9 @@
 
 @ D.4
 > Either side can send change_cipher_spec at any time during the handshake, as they must be ignored by the peer, but if the client sends a non-empty session ID, the server MUST send the change_cipher_spec as described in this appendix.
-= row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
-= row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
-= row step retry whole even strict plain:hello => wait_finished whole even strict send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
+= row step start whole even strict q0 plain:hello_retry => retry whole even strict q0 send:retry send:ccs
+= row step retry whole even strict q0 plain:hello => wait_finished whole even strict q0 send:server_hello write_keys:handshake read_keys:handshake send:flight write_keys:data
 = check Handshake.AtMostOnce
 = check Handshake.RightKeys
 = code send the dummy change_cipher_spec (one unprotected record holding the single byte 0x01) right after the first of ServerHello and HelloRetryRequest, whether or not the client's session id was empty
@@ -1367,28 +1373,28 @@
 = test our_hellos_field_by_field
 = test what_is_refused_and_with_which_alert
 = test bug_ssl3_legacy_version_was_served
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > The security of SSL 2.0 [SSL2] is considered insufficient for the reasons enumerated in [RFC6176], and it MUST NOT be negotiated for any reason.
 = code never negotiate any version but TLS 1.3; an SSL 2.0 CLIENT-HELLO is not a TLS record and fails as a record of unknown type with unexpected_message
 = test bug_unknown_record_type_got_decode_error
 = test records_are_framed_and_checked
-= row step start whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
 > Implementations MUST NOT send an SSL version 2.0 compatible CLIENT-HELLO.
 = unused TLS client role: shioko never sends a ClientHello of any kind; its upstreams are plain HTTP
 > Implementations MUST NOT negotiate TLS 1.3 or later using an SSL version 2.0 compatible CLIENT-HELLO.
 = code treat an SSL 2.0 format CLIENT-HELLO as an invalid first record (unknown content type, unexpected_message) and never parse it as a ClientHello
 = test records_are_framed_and_checked
-= row step start whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
 > Implementations are NOT RECOMMENDED to accept an SSL version 2.0 compatible CLIENT-HELLO in order to negotiate older versions of TLS.
 = unused TLS 1.2 and earlier: never negotiated; an SSL 2.0 format CLIENT-HELLO is refused as an invalid first record
-= row step start whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
+= row step start whole even strict q0 invalid:unexpected_message => closed whole even strict q0 alert:unexpected_message
 > Implementations MUST NOT send a ClientHello.legacy_version or ServerHello.legacy_version set to 0x0300 or less.
 = code set legacy_version to 0x0303 in ServerHello and in HelloRetryRequest
 = test our_hellos_field_by_field
 > Any endpoint receiving a Hello message with ClientHello.legacy_version or ServerHello.legacy_version set to 0x0300 MUST abort the handshake with a "protocol_version" alert.
 = code refuse a ClientHello whose legacy_version is 0x0300 with protocol_version, even when supported_versions lists 0x0304
 = test bug_ssl3_legacy_version_was_served
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > Implementations MUST NOT send any records with a version less than 0x0300.
 = code write legacy_record_version 0x0303 on every record we send
 = test sealed_records_open_with_the_same_keys_and_sequence_only
@@ -1396,7 +1402,7 @@
 > Implementations SHOULD NOT accept any records with a version less than 0x0300 (but may inadvertently do so if the record version number is ignored completely).
 = code ignore legacy_record_version completely, as section 5.1 requires, so that a record below 0x0300 is accepted like any other (which this sentence allows); a ClientHello whose legacy_version is 0x0300 or lower is refused with protocol_version (SPEC section 5)
 = test bug_record_version_was_not_ignored
-= row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
+= row step start whole even strict q0 invalid:protocol_version => closed whole even strict q0 alert:protocol_version
 > Implementations MUST NOT use the Truncated HMAC extension, defined in Section 7 of [RFC6066], as it is not applicable to AEAD algorithms and has been shown to be insecure in some scenarios.
 = unused truncated_hmac: never negotiated; the extension in a ClientHello is skipped as unknown and never echoed in EncryptedExtensions
 
@@ -1426,12 +1432,12 @@
 = unused 0-RTT: early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 > In addition, to avoid accidental misuse, TLS implementations MUST NOT enable 0-RTT (either sending or accepting) unless specifically requested by the application and MUST NOT automatically resend 0-RTT data if it is rejected by the server unless instructed by the application.
 = unused 0-RTT: never enabled in either direction (SPEC sections 2 and 5); early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
-= row step wait_finished whole even skipping undecryptable:- => wait_finished whole even skipping skip:-
-= row step wait_finished whole even skipping invalid:bad_record_mac => closed whole even strict alert:bad_record_mac
+= row step wait_finished whole even skipping q0 undecryptable:- => wait_finished whole even skipping q0 skip:-
+= row step wait_finished whole even skipping q0 invalid:bad_record_mac => closed whole even strict q0 alert:bad_record_mac
 = check Handshake.SkipOnlyEarlyData
 > In order to allow applications to implement this kind of processing, TLS implementations MUST provide a way for the application to determine if the handshake has completed.
 = check Handshake.DataOnlyAfterFinished
-= row step wait_finished whole even strict write:- => wait_finished whole even strict
+= row step wait_finished whole even strict q0 write:- => wait_finished whole even strict q0
 = code hand the TLS stream to the HTTP layer only once the client Finished has verified, so the application never holds a connection whose handshake is incomplete
 = test a_wrong_finished_is_decrypt_error
 = test a_whole_handshake_and_data_both_ways

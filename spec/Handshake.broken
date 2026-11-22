@@ -85,8 +85,8 @@ expect invariant SplitMessageNotInterleaved
 # A requested KeyUpdate is not answered.
 break key-update-unanswered
 expect invariant KeyUpdateAnswered
--        Go([t EXCEPT !.owed = TRUE], "open", <<ReadKeys("next")>>)
-+        Go(t, "open", <<ReadKeys("next")>>)
+-        [state |-> [q EXCEPT !.owed = TRUE], acts |-> <<ReadKeys("next")>>]
++        [state |-> q, acts |-> <<ReadKeys("next")>>]
 
 # We announce a KeyUpdate but keep writing under the old keys.
 break key-update-old-keys
@@ -115,8 +115,8 @@ expect invariant NoNonceReuse
 # A peer KeyUpdate moves our read keys back to the handshake keys.
 break keys-backward
 expect property KeysMoveForward
--        Go(t, "open", <<ReadKeys("next")>>)
-+        Go(t, "open", <<ReadKeys("handshake")>>)
+-        [state |-> q, acts |-> <<ReadKeys("next")>>]
++        [state |-> q, acts |-> <<ReadKeys("handshake")>>]
 
 # The client Finished opens the connection without switching read keys.
 break read-keys-not-switched
@@ -168,3 +168,30 @@ break unencrypted-alert-answered
 expect invariant PlainRefusedAfterKeys
 -    ELSE IF ~protected /\ s.phase = "wait_finished" /\ c \in {"alert", "close_notify"} THEN
 +    ELSE IF FALSE THEN
+
+# A dropped ChangeCipherSpec is not counted.
+break ccs-not-counted
+expect invariant QuietCapped
+-        THEN [state |-> q, acts |-> <<>>] ELSE Fail("unexpected_message")
++        THEN Stay(s) ELSE Fail("unexpected_message")
+
+# Records with nothing in them are let through however many come.
+break quiet-not-capped
+expect invariant QuietCapped
+-    ELSE IF Quiet(s, protected, c) /\ s.quiet = MaxQuiet THEN
++    ELSE IF FALSE THEN
+
+# A piece of a split message starts the count again, so splitting every
+# KeyUpdate in two would get round the cap.
+break fragment-resets-count
+expect invariant QuietCapped
+-        [state |-> [t EXCEPT !.partial = TRUE], acts |-> <<>>]
++        [state |-> [t EXCEPT !.partial = TRUE, !.quiet = 0], acts |-> <<>>]
+
+# Application data does not start the count again.
+break data-keeps-count
+expect invariant QuietCapped
+-    ELSE IF s.phase = "open" /\ c = "data" THEN
+-        Go(t, "open", <<Deliver>>)
++    ELSE IF s.phase = "open" /\ c = "data" THEN
++        [state |-> [t EXCEPT !.partial = FALSE], acts |-> <<Deliver>>]

@@ -10,6 +10,7 @@ Word(w)  == IF w = "" THEN "-" ELSE w
 State(s) == s.phase \o " " \o (IF s.partial THEN "partial" ELSE "whole")
                 \o " " \o (IF s.owed THEN "owed" ELSE "even")
                 \o " " \o (IF s.early THEN "skipping" ELSE "strict")
+                \o " q" \o ToString(s.quiet)
 
 RECURSIVE List(_)
 List(as) ==

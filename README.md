@@ -184,6 +184,9 @@ it departs from in `spec/rfc/`.
   only.
 - TLS 1.3 only; no session resumption, no early data, no client
   certificates.
+- After 32 records in a row that carry nothing (dummy ChangeCipherSpecs,
+  KeyUpdates, empty records), the next is refused, as OpenSSL and
+  BoringSSL refuse it, although the RFC has them all accepted.
 - The certificate chain is sent as it is in the file and never parsed, so
   nothing the RFC asks of a chain is checked.
 

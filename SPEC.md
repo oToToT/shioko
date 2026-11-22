@@ -294,6 +294,11 @@ Handshake behaviour:
   older gets `protocol_version`.
 - After the handshake: KeyUpdate from the client is honoured. When it asks
   for ours, we send it together with our next write, as the RFC allows.
+- At most 32 records in a row may carry nothing: the client's dummy
+  ChangeCipherSpec, a KeyUpdate (also one split over two records), an
+  empty application data record. Application data and each step of the
+  handshake start the count again; the 33rd gets `unexpected_message`, as
+  in OpenSSL and BoringSSL.
 - We send `close_notify` whenever we end a connection that can still be
   written to: when the application is done, on every deadline, at the end
   of a tunnel, and when the client's stream ends. (Ending at once, to stop
@@ -344,6 +349,9 @@ Known departures from RFC 8446 (each is listed in `spec/rfc/rfc8446.req`):
   and the client's `signature_algorithms_cert`.
 - A ChangeCipherSpec between the pieces of a split handshake message is
   refused, not dropped.
+- The RFC has every dummy ChangeCipherSpec dropped and every KeyUpdate
+  honoured, however many come; the 33rd record in a row that carries
+  nothing is refused (above).
 - When a tunnel is ended at once while its other thread is blocked writing
   to the client, no `close_notify` is sent: the record being written can
   neither be finished nor have another put in its middle. Section 6.1 asks
@@ -595,8 +603,11 @@ at any time, and two threads sharing the connection.
 - A requested KeyUpdate is answered before our next application data.
 - Records are skipped only as early data we did not accept, and never
   after a record has decrypted.
-- Nothing is silently ignored except the three cases the spec lists; a
+- Nothing is silently ignored except the four cases the spec lists; a
   closed connection does nothing; under fairness every handshake ends.
+- Records that carry nothing are counted, and one too many in a row ends
+  the connection; only application data and steps of the handshake start
+  the count again (`QuietCapped`, checked with a limit of 2).
 
 **`Http.tla`** — the framing rules and the exchange state machine as pure
 functions, with the facts that hold of them for every input:
