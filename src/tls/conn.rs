@@ -252,6 +252,27 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         actions
     }
 
+    /// Steps on what the peer sent. A step that has us send something (an
+    /// answer to close_notify or to a KeyUpdate, an alert) is taken only
+    /// with the write lock held, which it then keeps: once the state says
+    /// the answer is due, no other thread may find the connection closed
+    /// and shut the transport down before the answer is out.
+    fn step_read<'g>(&'g self, event: Event, writer: &mut Option<MutexGuard<'g, WriteSide>>) -> Vec<Action> {
+        loop {
+            {
+                let mut state = lock(&self.fsm);
+                let (next, actions) = fsm::step(*state, event);
+                if writer.is_some() || !actions.iter().any(|action| action.needs_write_lock()) {
+                    *state = next;
+                    return actions;
+                }
+            }
+            // The state may move on while we wait; the step is worked out
+            // again from where it is then.
+            *writer = Some(lock(&self.writer));
+        }
+    }
+
     fn note(&self, what: &str) {
         self.log.error(&format!("{} tls: {what}", net::canonical(self.peer)));
     }
@@ -592,7 +613,8 @@ impl<'a, S: Stream> TlsStream<'a, S> {
     /// carries out what it says. `Ok(false)`: nothing came in time.
     fn advance<'s>(&self, reader: &mut ReadSide, mut hs: Option<&mut Handshake<'s>>, served: Option<&Served<'s>>) -> Result<bool, ()> {
         let Some((event, data)) = self.read_record(reader, hs.as_deref_mut(), served) else { return Ok(false) };
-        let actions = self.step(event);
+        let mut writer = None;
+        let actions = self.step_read(event, &mut writer);
         // An orderly end is a close_notify the state machine accepted and
         // answers with ours; one it refused (unencrypted after the
         // handshake, or between the pieces of a message) is none.
@@ -600,7 +622,7 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         if peer_closed && actions == [Action::Alert(Alert::CloseNotify)] {
             self.clean_end.store(true, Ordering::Relaxed);
         }
-        self.carry_out(actions, reader, hs, data, None, &[]).map(|()| true)
+        self.carry_out(actions, reader, hs, data, writer, &[]).map(|()| true)
     }
 
     /// We end the connection: close_notify, unless it is over already.

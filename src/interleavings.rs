@@ -145,6 +145,7 @@ fn identities() -> &'static [Option<std::sync::Arc<Identity>>] {
 const UPGRADE: &[u8] = b"GET /ws HTTP/1.1\r\nHost: site.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
 const SWITCHING: &[u8] = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n";
 const KEY_UPDATE_REQUESTED: &[u8] = &[24, 0, 0, 1, 1];
+const CLOSE_NOTIFY: &[u8] = &[1, 0];
 
 /// What came after the head of a message.
 fn after_head(bytes: &[u8]) -> &[u8] {
@@ -195,6 +196,22 @@ fn bug_a_tunnel_ending_at_both_ends_at_once_lost_its_close_notify() {
         assert_eq!(down, b"down 1down 2");
         assert_eq!(alert, Some(0));
         assert!(b"up 1up 2".starts_with(&up), "the upstream got {up:?}");
+    });
+}
+
+/// The client ends first with close_notify while the upstream stays: the
+/// reading pump answers close_notify while the other may be writing data,
+/// and nothing may follow our close_notify; the shutdown must wake the
+/// pump blocked reading the upstream.
+#[test]
+fn bug_our_answer_to_close_notify_was_cut_by_a_shutdown_in_between() {
+    every_schedule(|| {
+        let client = Peer::held(records(&[(23, UPGRADE), (23, b"up 1"), (21, CLOSE_NOTIFY)]), usize::MAX);
+        let upstream = Pipe::new(&[SWITCHING, b"down 1down 2"].concat(), 5, true);
+        let (down, alert, up) = tunnel(client, upstream);
+        assert!(b"down 1down 2".starts_with(&down), "the client got {down:?}");
+        assert_eq!(alert, Some(0));
+        assert_eq!(up, b"up 1");
     });
 }
 

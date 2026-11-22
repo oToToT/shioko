@@ -162,7 +162,11 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
   waits for it before giving its slot back.
 - In a tunnel both threads share the TLS connection. Writing has a lock;
   reading never waits for it, so a client that is slow to read cannot stop
-  us reading from it. After a failed write nothing more is sent.
+  us reading from it. A step of the TLS state machine that has us send
+  something (an answer to a KeyUpdate or to the client's close_notify, an
+  alert) is taken with the lock held, so no other thread can find the
+  connection closed and shut it down before what is due has gone out.
+  After a failed write nothing more is sent.
 - The first thread to stop shuts down both sockets, which is what stops
   the other one; the other then leaves them as they are, since a second
   shutdown at the same moment would cut the first one's close_notify.
@@ -627,7 +631,7 @@ Each tool is used where it is strongest:
 | What | Tool | Checks the code itself? |
 |---|---|---|
 | Threads and locks: the TLS write lock, the connection cap, the two tunnel threads | TLA+ (`Handshake.tla`, `Server.tla`), and TLC on recorded runs of the real server | yes, for the runs recorded: every tlsfuzzer connection against `Handshake.tla`, a whole end-to-end run against `Server.tla` |
-| The same threads in the real code: a tunnel's two pumps over one TlsStream (data both ways, a KeyUpdate, either end first), and the slots with accept loops and a stop | shuttle (`src/interleavings.rs`): the real code with shuttle's locks, run under 600 schedules of each test in CI (PCT, which finds a bug of a few steps with known probability, and random), any number locally; a deadlock is a failure | yes, for the schedules tried |
+| The same threads in the real code: a tunnel's two pumps over one TlsStream (data both ways, a KeyUpdate, close_notify, either end first), and the slots with accept loops and a stop | shuttle (`src/interleavings.rs`): the real code with shuttle's locks, run under 600 schedules of each test in CI (PCT, which finds a bug of a few steps with known probability, and random), any number locally; a deadlock is a failure | yes, for the schedules tried |
 | The two state machines (TLS handshake, HTTP exchange) and the framing rules | TLA+, then the Rust function compared with the spec on every input | yes, on every input |
 | Parsers: request and status lines, fields, sizes, Host | Kani proofs and unit tests | yes, for every input up to a size |
 | Buffers and copying: which bytes go where, where a message ends | tests of the real proxy over scripted streams, every way the reads can fall | yes, for the runs the tests make |
