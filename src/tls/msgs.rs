@@ -58,12 +58,9 @@ pub struct ClientHello<'a> {
     pub alpn: bool,
 }
 
-/// A list of two-byte values with a length of `width` bytes, at least one
-/// value, and nothing after it in its extension.
-fn u16_list(mut data: Reader<'_>, width: usize) -> Option<Vec<u16>> {
-    let mut list = if width == 1 { data.vec8()? } else { data.vec16()? };
-    data.end()?;
-    if list.is_empty() || list.rest().len() % 2 != 0 {
+/// A non-empty list of two-byte values that fills `list`.
+fn u16s(mut list: Reader<'_>) -> Option<Vec<u16>> {
+    if list.is_empty() || !list.rest().len().is_multiple_of(2) {
         return None;
     }
     let mut values = Vec::new();
@@ -73,86 +70,11 @@ fn u16_list(mut data: Reader<'_>, width: usize) -> Option<Vec<u16>> {
     Some(values)
 }
 
-/// The contents of the extensions we read, decoded.
-struct Decoded<'a> {
-    versions: Option<Vec<u16>>,
-    signatures: Option<Vec<u16>>,
-    groups: Option<Vec<u16>>,
-    shares: Option<Vec<(u16, &'a [u8])>>,
-    /// The host name, and whether there was more than one.
-    server_name: Option<(&'a [u8], bool)>,
-    /// Whether the ALPN list holds http/1.1.
-    alpn: Option<bool>,
-    early: bool,
-}
-
-fn decode<'a>(get: impl Fn(u16) -> Option<Reader<'a>>) -> Option<Decoded<'a>> {
-    let versions = match get(SUPPORTED_VERSIONS) {
-        Some(data) => Some(u16_list(data, 1)?),
-        None => None,
-    };
-    let signatures = match get(SIGNATURE_ALGORITHMS) {
-        Some(data) => Some(u16_list(data, 2)?),
-        None => None,
-    };
-    let groups = match get(SUPPORTED_GROUPS) {
-        Some(data) => Some(u16_list(data, 2)?),
-        None => None,
-    };
-    let shares = match get(KEY_SHARE) {
-        Some(mut data) => {
-            let mut entries = data.vec16()?;
-            data.end()?;
-            let mut list = Vec::new();
-            while !entries.is_empty() {
-                let group = entries.u16()?;
-                // key_exchange<1..2^16-1>
-                let key = entries.vec16()?.rest();
-                if key.is_empty() {
-                    return None;
-                }
-                list.push((group, key));
-            }
-            Some(list)
-        }
-        None => None,
-    };
-    let server_name = match get(SERVER_NAME) {
-        Some(mut data) => {
-            let mut list = data.vec16()?;
-            data.end()?;
-            let mut name: Option<&[u8]> = None;
-            let mut two = false;
-            while !list.is_empty() {
-                let kind = list.u8()?;
-                let entry = list.vec16()?.rest();
-                if kind == 0 {
-                    two |= name.is_some();
-                    name = Some(entry);
-                }
-            }
-            Some((name.filter(|n| !n.is_empty())?, two))
-        }
-        None => None,
-    };
-    let alpn = match get(ALPN) {
-        Some(mut data) => {
-            let mut protocols = data.vec16().filter(|p| !p.is_empty())?;
-            data.end()?;
-            let mut http11 = false;
-            while !protocols.is_empty() {
-                let name = protocols.vec8().filter(|n| !n.is_empty())?.rest();
-                http11 |= name == HTTP11;
-            }
-            Some(http11)
-        }
-        None => None,
-    };
-    let early = match get(EARLY_DATA) {
-        Some(data) => data.end().map(|()| true)?,
-        None => false,
-    };
-    Some(Decoded { versions, signatures, groups, shares, server_name, alpn, early })
+/// The contents of an extension as `read` decodes them, if it is there.
+/// `read` must take all of it.
+fn extension<'a, T>(data: Option<Reader<'a>>, read: impl FnOnce(&mut Reader<'a>) -> Option<T>) -> Result<Option<T>, Alert> {
+    let Some(mut data) = data else { return Ok(None) };
+    read(&mut data).filter(|_| data.is_empty()).map(Some).ok_or(Alert::DecodeError)
 }
 
 /// Reads and checks a ClientHello: the whole handshake message, header
@@ -182,18 +104,9 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
     r.end().ok_or(decode_error)?;
     let legacy_version = body.u16().ok_or(decode_error)?;
     let _random = body.bytes(32).ok_or(decode_error)?;
-    let session_id = body.vec8().ok_or(decode_error)?.rest();
-    if session_id.len() > 32 {
-        return Err(decode_error);
-    }
-    let suites = body.vec16().ok_or(decode_error)?;
-    if suites.rest().len() % 2 != 0 || suites.is_empty() {
-        return Err(decode_error);
-    }
-    let compression = body.vec8().ok_or(decode_error)?.rest();
-    if compression.is_empty() {
-        return Err(decode_error);
-    }
+    let session_id = body.vec8().map(Reader::rest).filter(|id| id.len() <= 32).ok_or(decode_error)?;
+    let suites = body.vec16().and_then(u16s).ok_or(decode_error)?;
+    let compression = body.vec8().map(Reader::rest).filter(|c| !c.is_empty()).ok_or(decode_error)?;
     // Without extensions there is no supported_versions: a client of TLS
     // 1.2 or older.
     if body.is_empty() {
@@ -211,42 +124,73 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
         found.push((kind, data));
     }
     let get = |kind: u16| found.iter().find(|(k, _)| *k == kind).map(|(_, data)| *data);
-    let present = |kind: u16| found.iter().any(|(k, _)| *k == kind);
-    let d = decode(get).ok_or(decode_error)?;
-    let mut suite_list = suites;
-    let mut offered_suites = Vec::new();
-    while !suite_list.is_empty() {
-        offered_suites.push(suite_list.u16().ok_or(decode_error)?);
-    }
+
+    // 1. The contents of the extensions we read.
+    let versions = extension(get(SUPPORTED_VERSIONS), |data| data.vec8().and_then(u16s))?;
+    let signatures = extension(get(SIGNATURE_ALGORITHMS), |data| data.vec16().and_then(u16s))?;
+    let groups = extension(get(SUPPORTED_GROUPS), |data| data.vec16().and_then(u16s))?;
+    let shares = extension(get(KEY_SHARE), |data| {
+        let mut entries = data.vec16()?;
+        let mut list = Vec::new();
+        while !entries.is_empty() {
+            let group = entries.u16()?;
+            // key_exchange<1..2^16-1>
+            let key = entries.vec16()?.rest();
+            if key.is_empty() {
+                return None;
+            }
+            list.push((group, key));
+        }
+        Some(list)
+    })?;
+    // The host name, and whether there was more than one.
+    let server_name = extension(get(SERVER_NAME), |data| {
+        let mut list = data.vec16()?;
+        let mut name: Option<&[u8]> = None;
+        let mut two = false;
+        while !list.is_empty() {
+            let kind = list.u8()?;
+            let entry = list.vec16()?.rest();
+            if kind == 0 {
+                two |= name.is_some();
+                name = Some(entry);
+            }
+        }
+        Some((name.filter(|n| !n.is_empty())?, two))
+    })?;
+    // Whether the ALPN list holds http/1.1.
+    let alpn = extension(get(ALPN), |data| {
+        let mut protocols = data.vec16().filter(|p| !p.is_empty())?;
+        let mut http11 = false;
+        while !protocols.is_empty() {
+            http11 |= protocols.vec8().filter(|n| !n.is_empty())?.rest() == HTTP11;
+        }
+        Some(http11)
+    })?;
+    let early = extension(get(EARLY_DATA), |_| Some(()))?.is_some();
 
     // 2. The version. A legacy_version of SSL 3.0 or older is refused
     // whatever else is offered (appendix D.5).
-    if !d.versions.as_ref().is_some_and(|v| v.contains(&TLS13)) || legacy_version <= 0x0300 {
+    if !versions.is_some_and(|v| v.contains(&TLS13)) || legacy_version <= 0x0300 {
         return Err(Alert::ProtocolVersion);
     }
 
     // 3. What may not be there, or not like this.
-    let two_names = d.server_name.is_some_and(|(_, two)| two);
-    if compression != [0] || repeated || present(COOKIE) || !psk_last || two_names {
+    let two_names = server_name.is_some_and(|(_, two)| two);
+    if compression != [0] || repeated || get(COOKIE).is_some() || !psk_last || two_names {
         return Err(Alert::IllegalParameter);
     }
-    if present(PRE_SHARED_KEY) && !present(PSK_KEY_EXCHANGE_MODES) {
+    if get(PRE_SHARED_KEY).is_some() && get(PSK_KEY_EXCHANGE_MODES).is_none() {
         return Err(Alert::MissingExtension);
     }
 
     // 4. What must be there.
-    let missing = Alert::MissingExtension;
-    let (Some(signatures), Some(groups), Some(shares), Some((server_name, _))) =
-        (d.signatures, d.groups, d.shares, d.server_name)
-    else {
-        return Err(missing);
+    let (Some(signatures), Some(groups), Some(shares), Some((server_name, _))) = (signatures, groups, shares, server_name) else {
+        return Err(Alert::MissingExtension);
     };
 
     // 5. What we can do.
-    if !offered_suites.contains(&CHACHA20_POLY1305_SHA256)
-        || !signatures.contains(&ECDSA_P256_SHA256)
-        || !groups.contains(&X25519)
-    {
+    if !suites.contains(&CHACHA20_POLY1305_SHA256) || !signatures.contains(&ECDSA_P256_SHA256) || !groups.contains(&X25519) {
         return Err(Alert::HandshakeFailure);
     }
 
@@ -263,46 +207,36 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
     }
 
     // 7. ALPN.
-    if d.alpn == Some(false) {
+    if alpn == Some(false) {
         return Err(Alert::NoApplicationProtocol);
     }
 
-    Ok(ClientHello { session_id, server_name, share, shares: shares.len(), early: d.early, alpn: d.alpn.is_some() })
+    Ok(ClientHello { session_id, server_name, share, shares: shares.len(), early, alpn: alpn.is_some() })
 }
 
 /// A handshake message: its type, its length, its body.
-fn message(kind: u8, body: impl FnOnce(&mut Writer)) -> Vec<u8> {
-    let mut w = Writer::new();
+fn message(kind: u8, body: impl FnOnce(&mut Writer) -> &mut Writer) -> Vec<u8> {
+    let mut w = Writer::default();
     w.u8(kind).vec(3, body);
     w.bytes
 }
 
-fn hello(random: &[u8; 32], session_id: &[u8], key_share: impl FnOnce(&mut Writer)) -> Vec<u8> {
+fn hello(random: &[u8; 32], session_id: &[u8], key_share: impl FnOnce(&mut Writer) -> &mut Writer) -> Vec<u8> {
     message(SERVER_HELLO, |w| {
-        w.u16(0x0303).raw(random).vec(1, |w| {
-            w.raw(session_id);
-        });
+        w.u16(0x0303).raw(random).vec(1, |w| w.raw(session_id));
         w.u16(CHACHA20_POLY1305_SHA256).u8(0).vec(2, |w| {
-            w.u16(SUPPORTED_VERSIONS).vec(2, |w| {
-                w.u16(TLS13);
-            });
-            w.u16(KEY_SHARE).vec(2, key_share);
-        });
+            w.u16(SUPPORTED_VERSIONS).vec(2, |w| w.u16(TLS13));
+            w.u16(KEY_SHARE).vec(2, key_share)
+        })
     })
 }
 
 pub fn server_hello(random: &[u8; 32], session_id: &[u8], public: &[u8; 32]) -> Vec<u8> {
-    hello(random, session_id, |w| {
-        w.u16(X25519).vec(2, |w| {
-            w.raw(public);
-        });
-    })
+    hello(random, session_id, |w| w.u16(X25519).vec(2, |w| w.raw(public)))
 }
 
 pub fn hello_retry_request(session_id: &[u8]) -> Vec<u8> {
-    hello(&RETRY_RANDOM, session_id, |w| {
-        w.u16(X25519);
-    })
+    hello(&RETRY_RANDOM, session_id, |w| w.u16(X25519))
 }
 
 /// EncryptedExtensions: an empty server_name to say we used it, and the
@@ -312,15 +246,10 @@ pub fn encrypted_extensions(alpn: bool) -> Vec<u8> {
         w.vec(2, |w| {
             w.u16(SERVER_NAME).u16(0);
             if alpn {
-                w.u16(ALPN).vec(2, |w| {
-                    w.vec(2, |w| {
-                        w.vec(1, |w| {
-                            w.raw(HTTP11);
-                        });
-                    });
-                });
+                w.u16(ALPN).vec(2, |w| w.vec(2, |w| w.vec(1, |w| w.raw(HTTP11))));
             }
-        });
+            w
+        })
     })
 }
 
@@ -328,50 +257,34 @@ pub fn certificate(chain: &[Vec<u8>]) -> Vec<u8> {
     message(CERTIFICATE, |w| {
         w.u8(0).vec(3, |w| {
             for der in chain {
-                w.vec(3, |w| {
-                    w.raw(der);
-                })
-                .u16(0);
+                w.vec(3, |w| w.raw(der)).u16(0);
             }
-        });
+            w
+        })
     })
 }
 
 /// What CertificateVerify signs (section 4.4.3).
 pub fn signed_content(transcript: &[u8; HASH_LEN]) -> Vec<u8> {
-    let mut content = vec![0x20u8; 64];
-    content.extend_from_slice(b"TLS 1.3, server CertificateVerify\0");
-    content.extend_from_slice(transcript);
-    content
+    [&[0x20; 64][..], b"TLS 1.3, server CertificateVerify\0", transcript].concat()
 }
 
 pub fn certificate_verify(signature: &[u8]) -> Vec<u8> {
-    message(CERTIFICATE_VERIFY, |w| {
-        w.u16(ECDSA_P256_SHA256).vec(2, |w| {
-            w.raw(signature);
-        });
-    })
+    message(CERTIFICATE_VERIFY, |w| w.u16(ECDSA_P256_SHA256).vec(2, |w| w.raw(signature)))
 }
 
 pub fn finished(verify_data: &[u8; HASH_LEN]) -> Vec<u8> {
-    message(FINISHED, |w| {
-        w.raw(verify_data);
-    })
+    message(FINISHED, |w| w.raw(verify_data))
 }
 
 pub fn key_update(requested: bool) -> Vec<u8> {
-    message(KEY_UPDATE, |w| {
-        w.u8(u8::from(requested));
-    })
+    message(KEY_UPDATE, |w| w.u8(u8::from(requested)))
 }
 
 /// The verify_data of a client Finished, if the message is one.
 pub fn client_finished(message: &[u8]) -> Option<&[u8]> {
-    let mut r = Reader::new(message);
-    (r.u8()? == FINISHED).then_some(())?;
-    let body = r.vec24()?.rest();
-    r.end()?;
-    (body.len() == HASH_LEN).then_some(body)
+    let verify_data = message.strip_prefix(&[FINISHED, 0, 0, HASH_LEN as u8])?;
+    (verify_data.len() == HASH_LEN).then_some(verify_data)
 }
 
 /// A KeyUpdate: whether the client asks for ours. Anything but 0 and 1 is

@@ -32,10 +32,6 @@ pub fn derive_secret(secret: &Secret, label: &str, transcript: &[u8; HASH_LEN]) 
     out
 }
 
-fn empty_hash() -> [u8; HASH_LEN] {
-    crypto::sha256(b"")
-}
-
 /// The secrets of a handshake, from the shared X25519 secret and the
 /// transcript up to ServerHello.
 pub struct HandshakeSecrets {
@@ -55,12 +51,13 @@ impl Drop for HandshakeSecrets {
 
 pub fn handshake_secrets(shared: &[u8; 32], transcript: &[u8; HASH_LEN]) -> HandshakeSecrets {
     // Without a PSK the early secret is Extract(0, 0).
+    let empty_hash = crypto::sha256(b"");
     let mut early = crypto::hkdf_extract(&[0u8; HASH_LEN], &[0u8; HASH_LEN]);
-    let mut salt = derive_secret(&early, "derived", &empty_hash());
+    let mut salt = derive_secret(&early, "derived", &empty_hash);
     let mut handshake = crypto::hkdf_extract(&salt, shared);
     let client = derive_secret(&handshake, "c hs traffic", transcript);
     let server = derive_secret(&handshake, "s hs traffic", transcript);
-    let mut master_salt = derive_secret(&handshake, "derived", &empty_hash());
+    let mut master_salt = derive_secret(&handshake, "derived", &empty_hash);
     let master = crypto::hkdf_extract(&master_salt, &[0u8; HASH_LEN]);
     for secret in [&mut early, &mut salt, &mut handshake, &mut master_salt] {
         wipe(secret);
@@ -124,11 +121,13 @@ pub fn verify_data(secret: &Secret, transcript: &[u8; HASH_LEN]) -> [u8; HASH_LE
 #[derive(Clone)]
 pub struct Transcript(Sha256);
 
-impl Transcript {
-    pub fn new() -> Transcript {
+impl Default for Transcript {
+    fn default() -> Transcript {
         Transcript(Sha256::new())
     }
+}
 
+impl Transcript {
     pub fn add(&mut self, message: &[u8]) {
         self.0.update(message);
     }
@@ -141,10 +140,9 @@ impl Transcript {
     /// message_hash message holding its hash (section 4.4.1).
     pub fn restart_with_message_hash(&mut self) {
         let hash = self.hash();
-        let mut fresh = Sha256::new();
-        fresh.update(&[254, 0, 0, HASH_LEN as u8]);
-        fresh.update(&hash);
-        self.0 = fresh;
+        *self = Transcript::default();
+        self.add(&[254, 0, 0, HASH_LEN as u8]);
+        self.add(&hash);
     }
 }
 
@@ -184,7 +182,7 @@ pub mod tests {
         let shared = crypto::x25519(&server_private, &client_public).unwrap();
         assert_eq!(shared.to_vec(), trace(s, "{server}  extract secret \"handshake\":", 1, "IKM"));
 
-        let mut transcript = Transcript::new();
+        let mut transcript = Transcript::default();
         transcript.add(&client_hello);
         transcript.add(&server_hello);
         let hash = transcript.hash();
@@ -223,7 +221,7 @@ pub mod tests {
     #[test]
     fn the_hello_retry_request_of_rfc8448() {
         let s = "5";
-        let mut transcript = Transcript::new();
+        let mut transcript = Transcript::default();
         transcript.add(&message(s, "client", "ClientHello", 1));
         transcript.restart_with_message_hash();
         transcript.add(&message(s, "server", "ServerHello", 1));

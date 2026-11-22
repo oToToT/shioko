@@ -34,43 +34,29 @@ pub struct State {
 pub const START: State = State { phase: Phase::Start, partial: false, owed: false, early: false };
 const CLOSED: State = State { phase: Phase::Closed, ..START };
 
+/// The alerts we send, numbered as on the wire (RFC 8446 section 6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Alert {
-    CloseNotify,
-    UnexpectedMessage,
-    BadRecordMac,
-    RecordOverflow,
-    HandshakeFailure,
-    IllegalParameter,
-    AccessDenied,
-    DecodeError,
-    DecryptError,
-    ProtocolVersion,
-    InternalError,
-    MissingExtension,
-    UnrecognizedName,
-    NoApplicationProtocol,
+    CloseNotify = 0,
+    UnexpectedMessage = 10,
+    BadRecordMac = 20,
+    RecordOverflow = 22,
+    HandshakeFailure = 40,
+    IllegalParameter = 47,
+    AccessDenied = 49,
+    DecodeError = 50,
+    DecryptError = 51,
+    ProtocolVersion = 70,
+    InternalError = 80,
+    MissingExtension = 109,
+    UnrecognizedName = 112,
+    NoApplicationProtocol = 120,
 }
 
 impl Alert {
-    /// The alert's number on the wire (RFC 8446 section 6).
     pub fn code(self) -> u8 {
-        match self {
-            Alert::CloseNotify => 0,
-            Alert::UnexpectedMessage => 10,
-            Alert::BadRecordMac => 20,
-            Alert::RecordOverflow => 22,
-            Alert::HandshakeFailure => 40,
-            Alert::IllegalParameter => 47,
-            Alert::AccessDenied => 49,
-            Alert::DecodeError => 50,
-            Alert::DecryptError => 51,
-            Alert::ProtocolVersion => 70,
-            Alert::InternalError => 80,
-            Alert::MissingExtension => 109,
-            Alert::UnrecognizedName => 112,
-            Alert::NoApplicationProtocol => 120,
-        }
+        self as u8
     }
 }
 
@@ -98,12 +84,6 @@ pub enum Content {
     KeyUpdateRequest,
     /// Any other handshake message.
     Other,
-}
-
-impl Content {
-    fn is_handshake(self) -> bool {
-        !matches!(self, Content::Ccs | Content::CloseNotify | Content::Alert | Content::Data)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,20 +157,11 @@ fn fail(alert: Alert) -> Result {
     (CLOSED, vec![Action::Alert(alert)])
 }
 
-/// Everything after ServerHello.
-fn flight(first: Action, ccs: bool) -> Vec<Action> {
-    let mut actions = vec![first];
-    if ccs {
-        actions.push(Action::Send(Kind::Ccs));
-    }
-    actions.extend([
-        Action::WriteKeys(Level::Handshake),
-        Action::ReadKeys(Level::Handshake),
-        Action::Send(Kind::Flight),
-        Action::WriteKeys(Level::Data),
-    ]);
-    actions
-}
+/// Everything after ServerHello: EncryptedExtensions, Certificate,
+/// CertificateVerify and Finished go out under the handshake keys, and from
+/// then on we write under the application keys.
+const FLIGHT: [Action; 4] =
+    [Action::WriteKeys(Level::Handshake), Action::ReadKeys(Level::Handshake), Action::Send(Kind::Flight), Action::WriteKeys(Level::Data)];
 
 fn on_record(s: State, protected: bool, c: Content) -> Result {
     use Content as C;
@@ -198,7 +169,7 @@ fn on_record(s: State, protected: bool, c: Content) -> Result {
     // The first record that decrypts ends the skipping of early data.
     let t = if protected { State { early: false, ..s } } else { s };
     let have_read_keys = matches!(s.phase, P::WaitFinished | P::Open);
-    if s.partial && !c.is_handshake() {
+    if s.partial && matches!(c, C::Ccs | C::CloseNotify | C::Alert | C::Data) {
         // Nothing may come between the pieces of a handshake message.
         return fail(Alert::UnexpectedMessage);
     }
@@ -230,7 +201,7 @@ fn on_record(s: State, protected: bool, c: Content) -> Result {
         (P::Start, C::Hello | C::HelloEarly) => go(
             State { early: c == C::HelloEarly, ..s },
             P::WaitFinished,
-            flight(Action::Send(Kind::ServerHello), true),
+            [&[Action::Send(Kind::ServerHello), Action::Send(Kind::Ccs)][..], &FLIGHT].concat(),
         ),
         (P::Start, C::HelloRetry | C::HelloRetryEarly) => go(
             State { early: c == C::HelloRetryEarly, ..s },
@@ -238,7 +209,7 @@ fn on_record(s: State, protected: bool, c: Content) -> Result {
             vec![Action::Send(Kind::Retry), Action::Send(Kind::Ccs)],
         ),
         (P::Retry, C::Hello) => {
-            go(State { early: false, ..s }, P::WaitFinished, flight(Action::Send(Kind::ServerHello), false))
+            go(State { early: false, ..s }, P::WaitFinished, [&[Action::Send(Kind::ServerHello)][..], &FLIGHT].concat())
         }
         // A second ClientHello must bring the key share and must not offer
         // early data again.

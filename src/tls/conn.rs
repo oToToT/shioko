@@ -20,6 +20,7 @@ use super::fsm::{self, Action, Alert, Content, Event, Kind, Level, Phase, State}
 use super::keys::{self, HandshakeSecrets, Secret, TrafficKeys, Transcript};
 use super::msgs;
 use super::record::{self, Opened, ReadError};
+use super::wire::Reader;
 use crate::config::{Config, Site};
 use crate::crypto::{self, HASH_LEN, SigningKey};
 use crate::log::Log;
@@ -77,14 +78,14 @@ pub struct Served<'a> {
 
 impl<'a> Served<'a> {
     fn find(&self, name: &[u8]) -> Option<(&'a Site, &'a Identity)> {
-        let index = self.config.sites.iter().position(|s| name.eq_ignore_ascii_case(s.name.as_bytes()))?;
-        let site = self.config.sites.get(index)?;
-        let identity = self.identities.get(index)?.as_ref()?;
-        Some((site, identity))
+        let mut sites = self.config.sites.iter().zip(self.identities);
+        let (site, identity) = sites.find(|(site, _)| name.eq_ignore_ascii_case(site.name.as_bytes()))?;
+        Some((site, identity.as_ref()?))
     }
 }
 
 /// What the handshake keeps between its steps.
+#[derive(Default)]
 struct Handshake<'a> {
     transcript: Transcript,
     site: Option<(&'a Site, &'a Identity)>,
@@ -109,6 +110,7 @@ impl Drop for Handshake<'_> {
 }
 
 /// One direction's keys.
+#[derive(Default)]
 struct Direction {
     secret: Secret,
     keys: Option<TrafficKeys>,
@@ -122,10 +124,6 @@ impl Drop for Direction {
 }
 
 impl Direction {
-    fn none() -> Direction {
-        Direction { secret: [0; HASH_LEN], keys: None, sequence: 0 }
-    }
-
     fn switch(&mut self, secret: Secret) {
         self.keys = Some(TrafficKeys::new(&secret));
         self.secret = secret;
@@ -145,6 +143,7 @@ impl Direction {
     }
 }
 
+#[derive(Default)]
 struct ReadSide {
     buffer: Buffer,
     keys: Direction,
@@ -156,6 +155,7 @@ struct ReadSide {
     skipped: usize,
 }
 
+#[derive(Default)]
 struct WriteSide {
     keys: Direction,
     /// A write failed: the stream may hold half a record, and nothing more
@@ -185,39 +185,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn alert_name(code: u8) -> String {
-    let name = match code {
-        0 => "close_notify",
-        10 => "unexpected_message",
-        20 => "bad_record_mac",
-        22 => "record_overflow",
-        40 => "handshake_failure",
-        42 => "bad_certificate",
-        43 => "unsupported_certificate",
-        44 => "certificate_revoked",
-        45 => "certificate_expired",
-        46 => "certificate_unknown",
-        47 => "illegal_parameter",
-        48 => "unknown_ca",
-        49 => "access_denied",
-        50 => "decode_error",
-        51 => "decrypt_error",
-        70 => "protocol_version",
-        71 => "insufficient_security",
-        80 => "internal_error",
-        86 => "inappropriate_fallback",
-        90 => "user_canceled",
-        109 => "missing_extension",
-        110 => "unsupported_extension",
-        112 => "unrecognized_name",
-        113 => "bad_certificate_status_response",
-        115 => "unknown_psk_identity",
-        116 => "certificate_required",
-        120 => "no_application_protocol",
-        _ => return format!("alert {code}"),
-    };
-    name.to_string()
-}
+/// The alerts of RFC 8446 section 6, for the log.
+const ALERT_NAMES: [(u8, &str); 27] = [
+    (0, "close_notify"), (10, "unexpected_message"), (20, "bad_record_mac"), (22, "record_overflow"),
+    (40, "handshake_failure"), (42, "bad_certificate"), (43, "unsupported_certificate"), (44, "certificate_revoked"),
+    (45, "certificate_expired"), (46, "certificate_unknown"), (47, "illegal_parameter"), (48, "unknown_ca"),
+    (49, "access_denied"), (50, "decode_error"), (51, "decrypt_error"), (70, "protocol_version"),
+    (71, "insufficient_security"), (80, "internal_error"), (86, "inappropriate_fallback"), (90, "user_canceled"),
+    (109, "missing_extension"), (110, "unsupported_extension"), (112, "unrecognized_name"),
+    (113, "bad_certificate_status_response"), (115, "unknown_psk_identity"), (116, "certificate_required"),
+    (120, "no_application_protocol"),
+];
 
 /// Test builds only: appends the ServerHello random and the shared secret
 /// to the file SHIOKO_KEYLOG names, from which tools/tlstrace.py derives
@@ -232,27 +210,13 @@ fn keylog(random: &[u8; 32], shared: &[u8; 32]) {
     }
 }
 
-/// What reading one record came to.
-enum Read {
-    /// An event for the state machine, and the application data it carried.
-    Event(Event, Vec<u8>),
-    /// Nothing came in time.
-    Timeout,
-}
-
 impl<'a, S: Stream> TlsStream<'a, S> {
     fn new(transport: S, log: &'a dyn Log, peer: IpAddr) -> Self {
         TlsStream {
             transport,
             fsm: Mutex::new(fsm::START),
-            reader: Mutex::new(ReadSide {
-                buffer: Buffer::new(),
-                keys: Direction::none(),
-                message: Vec::new(),
-                plain: Vec::new(),
-                skipped: 0,
-            }),
-            writer: Mutex::new(WriteSide { keys: Direction::none(), dead: false }),
+            reader: Mutex::default(),
+            writer: Mutex::default(),
             read_timeout: Mutex::new(None),
             clean_end: AtomicBool::new(false),
             log,
@@ -271,82 +235,57 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         actions
     }
 
+    fn note(&self, what: &str) {
+        self.log.error(&format!("{} tls: {what}", net::canonical(self.peer)));
+    }
+
     fn note_alert(&self, sent: bool, code: u8) {
         if code != 0 {
             let who = if sent { "sent" } else { "received" };
-            self.log.error(&format!("{} tls: {who} {}", net::canonical(self.peer), alert_name(code)));
+            let name = ALERT_NAMES.iter().find(|(c, _)| *c == code).map(|(_, name)| name.to_string());
+            self.note(&format!("{who} {}", name.unwrap_or_else(|| format!("alert {code}"))));
         }
     }
 
-    // ------------------------------------------------------------ reading
-
-    /// Reads one record and says what it is.
-    fn read_record<'s>(&self, reader: &mut ReadSide, hs: Option<&mut Handshake<'s>>, served: Option<&Served<'s>>) -> Read {
+    /// Reads one record and says what it is, with the application data it
+    /// carried; `None` if nothing came in time.
+    fn read_record<'s>(&self, reader: &mut ReadSide, hs: Option<&mut Handshake<'s>>, served: Option<&Served<'s>>) -> Option<(Event, Vec<u8>)> {
+        let only = |event| Some((event, Vec::new()));
         let record = match record::read(&mut reader.buffer, &self.transport) {
             Ok(record) => record,
-            Err(ReadError::Timeout) => return Read::Timeout,
-            Err(ReadError::End | ReadError::Cut) => return Read::Event(Event::Close, Vec::new()),
-            Err(ReadError::Refused(alert)) => return Read::Event(Event::Invalid(alert), Vec::new()),
+            Err(ReadError::Timeout) => return None,
+            Err(ReadError::End | ReadError::Cut) => return only(Event::Close),
+            Err(ReadError::Refused(alert)) => return only(Event::Invalid(alert)),
         };
         let state = self.state();
         let size = record.payload.len();
         // Early data we did not accept is skipped, up to a limit.
-        let skip = |reader: &mut ReadSide, event: Event| -> Read {
+        let skip = |reader: &mut ReadSide, event| {
             reader.skipped = reader.skipped.saturating_add(size);
-            if reader.skipped > EARLY_DATA_LIMIT {
-                Read::Event(Event::Invalid(Alert::UnexpectedMessage), Vec::new())
-            } else {
-                Read::Event(event, Vec::new())
-            }
+            only(if reader.skipped > EARLY_DATA_LIMIT { Event::Invalid(Alert::UnexpectedMessage) } else { event })
         };
-        let Some(keys) = &reader.keys.keys else {
-            return match record.content_type {
-                record::APPLICATION_DATA if state.early && state.phase == Phase::Retry => {
-                    skip(reader, Event::Plain(Content::Data))
+        let (protected, content_type, content) = match (&reader.keys.keys, record.content_type) {
+            (None, record::APPLICATION_DATA) if state.early && state.phase == Phase::Retry => {
+                return skip(reader, Event::Plain(Content::Data));
+            }
+            // With read keys only the dummy ChangeCipherSpec may come
+            // unencrypted. An unencrypted alert is refused too, but read so
+            // that it is logged: it tells why the client gave up.
+            (None, _) | (Some(_), record::CHANGE_CIPHER_SPEC | record::ALERT) => (false, record.content_type, record.payload),
+            (Some(keys), record::APPLICATION_DATA) => match record::open(keys, reader.keys.sequence, &record) {
+                Opened::Undecryptable if state.early && state.phase == Phase::WaitFinished => {
+                    return skip(reader, Event::Undecryptable);
                 }
-                record::APPLICATION_DATA => Read::Event(Event::Plain(Content::Data), Vec::new()),
-                _ => self.content(reader, hs, served, state, false, record.content_type, record.payload),
-            };
+                Opened::Undecryptable => return only(Event::Undecryptable),
+                Opened::Refused(alert) => return only(Event::Invalid(alert)),
+                Opened::Content(content_type, content) => match reader.keys.take_sequence() {
+                    Some(_) => (true, content_type, content),
+                    None => return only(Event::Invalid(Alert::InternalError)),
+                },
+            },
+            (Some(_), _) => return only(Event::Plain(Content::Other)),
         };
-        match record.content_type {
-            record::APPLICATION_DATA => {}
-            // Only the dummy ChangeCipherSpec may come unencrypted now. An
-            // unencrypted alert is refused too, but read so that it is
-            // logged: it tells why the client gave up.
-            record::CHANGE_CIPHER_SPEC | record::ALERT => {
-                return self.content(reader, hs, served, state, false, record.content_type, record.payload);
-            }
-            _ => return Read::Event(Event::Plain(Content::Other), Vec::new()),
-        }
-        let opened = record::open(keys, reader.keys.sequence, &record);
-        match opened {
-            Opened::Undecryptable if state.early && state.phase == Phase::WaitFinished => {
-                skip(reader, Event::Undecryptable)
-            }
-            Opened::Undecryptable => Read::Event(Event::Undecryptable, Vec::new()),
-            Opened::Refused(alert) => Read::Event(Event::Invalid(alert), Vec::new()),
-            Opened::Content(content_type, content) => {
-                if reader.keys.take_sequence().is_none() {
-                    return Read::Event(Event::Invalid(Alert::InternalError), Vec::new());
-                }
-                self.content(reader, hs, served, state, true, content_type, content)
-            }
-        }
-    }
-
-    /// What the content of a readable record is.
-    #[allow(clippy::too_many_arguments)]
-    fn content<'s>(
-        &self,
-        reader: &mut ReadSide,
-        hs: Option<&mut Handshake<'s>>,
-        served: Option<&Served<'s>>,
-        state: State,
-        protected: bool,
-        content_type: u8,
-        content: Vec<u8>,
-    ) -> Read {
-        let wrap = |c: Content| if protected { Event::Protected(c) } else { Event::Plain(c) };
+        let wrap = |c| if protected { Event::Protected(c) } else { Event::Plain(c) };
         let event = match content_type {
             record::CHANGE_CIPHER_SPEC if content == [1] => wrap(Content::Ccs),
             record::ALERT => match content.as_slice() {
@@ -358,19 +297,19 @@ impl<'a, S: Stream> TlsStream<'a, S> {
                 // (section 5.4), anything else that is not two bytes as
                 // malformed.
                 [] => {
-                    self.log.error(&format!("{} tls: received an empty alert", net::canonical(self.peer)));
+                    self.note("received an empty alert");
                     Event::Invalid(Alert::UnexpectedMessage)
                 }
                 _ => {
-                    self.log.error(&format!("{} tls: received a malformed alert", net::canonical(self.peer)));
+                    self.note("received a malformed alert");
                     Event::Invalid(Alert::DecodeError)
                 }
             },
-            record::APPLICATION_DATA => return Read::Event(wrap(Content::Data), content),
-            record::HANDSHAKE => self.handshake(reader, hs, served, state, protected, &content),
+            record::APPLICATION_DATA => return Some((wrap(Content::Data), content)),
+            record::HANDSHAKE => self.handshake(reader, hs, served, state.phase, &content).map_or_else(Event::Invalid, wrap),
             _ => Event::Invalid(Alert::UnexpectedMessage),
         };
-        Read::Event(event, Vec::new())
+        only(event)
     }
 
     /// Handshake bytes: put together into messages, which must end where
@@ -380,75 +319,59 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         reader: &mut ReadSide,
         hs: Option<&mut Handshake<'s>>,
         served: Option<&Served<'s>>,
-        state: State,
-        protected: bool,
+        phase: Phase,
         bytes: &[u8],
-    ) -> Event {
-        let wrap = |c: Content| if protected { Event::Protected(c) } else { Event::Plain(c) };
+    ) -> Result<Content, Alert> {
         if bytes.is_empty() {
-            return Event::Invalid(Alert::UnexpectedMessage);
+            return Err(Alert::UnexpectedMessage);
         }
         reader.message.extend_from_slice(bytes);
-        let length = match reader.message.get(1..4) {
-            Some(&[a, b, c]) => usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c),
-            _ => return wrap(Content::Fragment),
+        let Some(length) = reader.message.get(1..4).and_then(|header| Reader::new(header).u24()) else {
+            return Ok(Content::Fragment);
         };
         if length > msgs::MESSAGE_LIMIT {
-            return Event::Invalid(Alert::DecodeError);
+            return Err(Alert::DecodeError);
         }
         let whole = length.saturating_add(4);
         if reader.message.len() < whole {
-            return wrap(Content::Fragment);
+            return Ok(Content::Fragment);
         }
         if reader.message.len() > whole {
             // Something after the end of a message in the same record.
-            return Event::Invalid(Alert::UnexpectedMessage);
+            return Err(Alert::UnexpectedMessage);
         }
         let message = std::mem::take(&mut reader.message);
-        match (message.first(), state.phase, hs, served) {
+        match (message.first(), phase, hs, served) {
             (Some(&msgs::CLIENT_HELLO), Phase::Start | Phase::Retry, Some(hs), Some(served)) => {
-                match self.client_hello(&message, state.phase, hs, served) {
-                    Ok(content) => wrap(content),
-                    Err(alert) => Event::Invalid(alert),
-                }
+                self.client_hello(&message, phase, hs, served)
             }
             (Some(&msgs::FINISHED), Phase::WaitFinished, Some(hs), _) => {
                 let expected = hs.secrets.as_ref().map(|s| keys::verify_data(&s.client, &hs.finished_hash));
                 match (msgs::client_finished(&message), expected) {
-                    (Some(got), Some(expected)) if crypto::ct_eq(got, &expected) => wrap(Content::Finished),
-                    (Some(_), _) => wrap(Content::FinishedBad),
-                    (None, _) => Event::Invalid(Alert::DecodeError),
+                    (Some(got), Some(expected)) if crypto::ct_eq(got, &expected) => Ok(Content::Finished),
+                    (Some(_), _) => Ok(Content::FinishedBad),
+                    (None, _) => Err(Alert::DecodeError),
                 }
             }
-            (Some(&msgs::KEY_UPDATE), Phase::Open, _, _) => match msgs::client_key_update(&message) {
-                Ok(false) => wrap(Content::KeyUpdate),
-                Ok(true) => wrap(Content::KeyUpdateRequest),
-                Err(alert) => Event::Invalid(alert),
-            },
-            _ => wrap(Content::Other),
+            (Some(&msgs::KEY_UPDATE), Phase::Open, _, _) => {
+                msgs::client_key_update(&message).map(|asked| if asked { Content::KeyUpdateRequest } else { Content::KeyUpdate })
+            }
+            _ => Ok(Content::Other),
         }
     }
 
     /// Checks a ClientHello and gets ready to answer it.
-    fn client_hello<'s>(
-        &self,
-        message: &[u8],
-        phase: Phase,
-        hs: &mut Handshake<'s>,
-        served: &Served<'s>,
-    ) -> Result<Content, Alert> {
+    fn client_hello<'s>(&self, message: &[u8], phase: Phase, hs: &mut Handshake<'s>, served: &Served<'s>) -> Result<Content, Alert> {
         let hello = msgs::client_hello(message)?;
         let found = served.find(hello.server_name).ok_or(Alert::UnrecognizedName)?;
         if !found.0.allows(served.peer) {
             return Err(Alert::AccessDenied);
         }
-        if phase == Phase::Retry {
-            // The second ClientHello is for the same site, and brings
-            // exactly the one key share we asked for (section 4.1.2).
-            let same = hs.site.is_some_and(|(site, _)| std::ptr::eq(site, found.0));
-            if !same || hello.shares != 1 {
-                return Err(Alert::IllegalParameter);
-            }
+        // The second ClientHello is for the same site, and brings exactly
+        // the one key share we asked for (section 4.1.2).
+        let same = hs.site.is_some_and(|(site, _)| std::ptr::eq(site, found.0));
+        if phase == Phase::Retry && (!same || hello.shares != 1) {
+            return Err(Alert::IllegalParameter);
         }
         hs.site = Some(found);
         hs.session_id = hello.session_id.to_vec();
@@ -468,8 +391,6 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         Ok(if hello.early { Content::HelloEarly } else { Content::Hello })
     }
 
-    // ------------------------------------------------------- carrying out
-
     /// Carries out actions in order. Those that need the write lock take it
     /// when the first of them comes. `data` is what `Deliver` hands over,
     /// `out` what `Send(Data)` sends.
@@ -478,30 +399,22 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         actions: Vec<Action>,
         reader: &mut ReadSide,
         mut hs: Option<&mut Handshake<'_>>,
-        data: Vec<u8>,
+        mut data: Vec<u8>,
         mut writer: Option<MutexGuard<'g, WriteSide>>,
         out: &[u8],
     ) -> Result<(), ()> {
-        let mut data = Some(data);
         for action in actions {
             if action.needs_write_lock() && writer.is_none() {
                 writer = Some(lock(&self.writer));
             }
             match action {
-                Action::ReadKeys(level) => {
-                    let secret = match (level, hs.as_deref()) {
-                        (Level::Handshake, Some(h)) => h.secrets.as_ref().map(|s| s.client),
-                        (Level::Data, Some(h)) => Some(h.client_application),
-                        (Level::Next, _) => None,
-                        _ => return Err(()),
-                    };
-                    match secret {
-                        Some(secret) => reader.keys.switch(secret),
-                        None if level == Level::Next => reader.keys.next(),
-                        None => return Err(()),
-                    }
-                }
-                Action::Deliver => reader.plain.extend(data.take().unwrap_or_default()),
+                Action::ReadKeys(level) => match (level, hs.as_deref()) {
+                    (Level::Next, _) => reader.keys.next(),
+                    (Level::Handshake, Some(Handshake { secrets: Some(secrets), .. })) => reader.keys.switch(secrets.client),
+                    (Level::Data, Some(hs)) => reader.keys.switch(hs.client_application),
+                    _ => return Err(()),
+                },
+                Action::Deliver => reader.plain.append(&mut data),
                 Action::Skip => {}
                 _ => {
                     let Some(w) = writer.as_mut() else { return Err(()) };
@@ -510,26 +423,18 @@ impl<'a, S: Stream> TlsStream<'a, S> {
                         // dropped.
                         return Ok(());
                     }
-                    match self.write_action(action, w, hs.as_deref_mut(), out) {
-                        Ok(()) => {}
+                    let Err(error) = self.write_action(action, w, hs.as_deref_mut(), out) else { continue };
+                    if error.kind() == io::ErrorKind::InvalidData {
                         // Something of ours failed, not the transport: say
                         // so to the client, if it can still be said.
-                        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                            self.log.error(&format!("{} tls: internal error", net::canonical(self.peer)));
-                            for alert in self.step(Event::Invalid(Alert::InternalError)) {
-                                if self.write_action(alert, w, None, &[]).is_err() {
-                                    break;
-                                }
-                            }
-                            w.dead = true;
-                            return Err(());
-                        }
-                        Err(_) => {
-                            w.dead = true;
-                            self.step(Event::Lost);
-                            return Err(());
-                        }
+                        self.note("internal error");
+                        let alerts = self.step(Event::Invalid(Alert::InternalError));
+                        let _ = alerts.into_iter().try_for_each(|alert| self.write_action(alert, w, None, &[]));
+                    } else {
+                        self.step(Event::Lost);
                     }
+                    w.dead = true;
+                    return Err(());
                 }
             }
         }
@@ -538,47 +443,48 @@ impl<'a, S: Stream> TlsStream<'a, S> {
 
     /// Sends records, splitting content longer than a record may carry.
     fn send(&self, w: &mut WriteSide, content_type: u8, content: &[u8]) -> io::Result<()> {
-        let mut pieces = content.chunks(record::MAX_PLAINTEXT).peekable();
-        if pieces.peek().is_none() {
+        if content.is_empty() {
             return Ok(());
         }
         let mut bytes = Vec::with_capacity(content.len() + 32);
-        for piece in pieces {
+        for piece in content.chunks(record::MAX_PLAINTEXT) {
             if w.keys.keys.is_none() {
                 bytes.extend(record::plain(content_type, piece));
                 continue;
             }
             let sequence = w.keys.take_sequence().ok_or(io::ErrorKind::InvalidData)?;
             let keys = w.keys.keys.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-            let sealed = record::seal(keys, sequence, content_type, piece).map_err(|_| io::ErrorKind::InvalidData)?;
-            bytes.extend(sealed);
+            bytes.extend(record::seal(keys, sequence, content_type, piece).map_err(|_| io::ErrorKind::InvalidData)?);
         }
         self.transport.write_all(&bytes)
     }
 
     fn write_action(&self, action: Action, w: &mut WriteSide, hs: Option<&mut Handshake<'_>>, out: &[u8]) -> io::Result<()> {
         let internal = || io::Error::from(io::ErrorKind::InvalidData);
-        match action {
-            Action::Alert(alert) => {
+        match (action, hs) {
+            (Action::Alert(alert), _) => {
                 self.note_alert(true, alert.code());
                 self.send(w, record::ALERT, &msgs::alert(alert))
             }
-            Action::Send(Kind::Ccs) => self.transport.write_all(&record::plain(record::CHANGE_CIPHER_SPEC, &[1])),
-            Action::Send(Kind::Data) => self.send(w, record::APPLICATION_DATA, out),
-            Action::Send(Kind::KeyUpdate) => self.send(w, record::HANDSHAKE, &msgs::key_update(false)),
-            Action::WriteKeys(Level::Next) => {
-                w.keys.next();
+            (Action::Send(Kind::Ccs), _) => self.transport.write_all(&record::plain(record::CHANGE_CIPHER_SPEC, &[1])),
+            (Action::Send(Kind::Data), _) => self.send(w, record::APPLICATION_DATA, out),
+            (Action::Send(Kind::KeyUpdate), _) => self.send(w, record::HANDSHAKE, &msgs::key_update(false)),
+            (Action::WriteKeys(level), hs) => {
+                match (level, hs) {
+                    (Level::Next, _) => w.keys.next(),
+                    (Level::Handshake, Some(Handshake { secrets: Some(secrets), .. })) => w.keys.switch(secrets.server),
+                    (Level::Data, Some(hs)) => w.keys.switch(hs.server_application),
+                    _ => return Err(internal()),
+                }
                 Ok(())
             }
-            Action::Send(Kind::Retry) => {
-                let hs = hs.ok_or_else(internal)?;
+            (Action::Send(Kind::Retry), Some(hs)) => {
                 hs.transcript.restart_with_message_hash();
                 let retry = msgs::hello_retry_request(&hs.session_id);
                 hs.transcript.add(&retry);
                 self.send(w, record::HANDSHAKE, &retry)
             }
-            Action::Send(Kind::ServerHello) => {
-                let hs = hs.ok_or_else(internal)?;
+            (Action::Send(Kind::ServerHello), Some(hs)) => {
                 let mut random = [0u8; 32];
                 crypto::random(&mut random).map_err(|_| internal())?;
                 let hello = msgs::server_hello(&random, &hs.session_id, &hs.public);
@@ -590,43 +496,25 @@ impl<'a, S: Stream> TlsStream<'a, S> {
                 keys::wipe(&mut hs.shared);
                 self.send(w, record::HANDSHAKE, &hello)
             }
-            Action::WriteKeys(level) => {
-                let hs = hs.ok_or_else(internal)?;
-                let secret = match level {
-                    Level::Handshake => hs.secrets.as_ref().map(|s| s.server).ok_or_else(internal)?,
-                    _ => hs.server_application,
-                };
-                w.keys.switch(secret);
-                Ok(())
-            }
-            Action::Send(Kind::Flight) => {
-                let hs = hs.ok_or_else(internal)?;
+            (Action::Send(Kind::Flight), Some(hs)) => {
                 let (_, identity) = hs.site.ok_or_else(internal)?;
-                let (server, master) = hs.secrets.as_ref().map(|s| (s.server, s.master)).ok_or_else(internal)?;
-                let mut flight = msgs::encrypted_extensions(hs.alpn);
-                hs.transcript.add(&flight);
+                let secrets = hs.secrets.as_mut().ok_or_else(internal)?;
+                let extensions = msgs::encrypted_extensions(hs.alpn);
+                hs.transcript.add(&extensions);
                 let certificate = msgs::certificate(&identity.chain);
                 hs.transcript.add(&certificate);
                 let signature = identity.key.sign(&msgs::signed_content(&hs.transcript.hash())).map_err(|_| internal())?;
                 let verify = msgs::certificate_verify(&signature);
                 hs.transcript.add(&verify);
-                let finished = msgs::finished(&keys::verify_data(&server, &hs.transcript.hash()));
+                let finished = msgs::finished(&keys::verify_data(&secrets.server, &hs.transcript.hash()));
                 hs.transcript.add(&finished);
                 hs.finished_hash = hs.transcript.hash();
-                (hs.client_application, hs.server_application) = keys::application_secrets(&master, &hs.finished_hash);
+                (hs.client_application, hs.server_application) = keys::application_secrets(&secrets.master, &hs.finished_hash);
                 // All that is still needed is the client's handshake secret,
                 // to check its Finished (section 7.1).
-                let (mut server, mut master) = (server, master);
-                keys::wipe(&mut server);
-                keys::wipe(&mut master);
-                if let Some(secrets) = hs.secrets.as_mut() {
-                    keys::wipe(&mut secrets.server);
-                    keys::wipe(&mut secrets.master);
-                }
-                for message in [certificate, verify, finished] {
-                    flight.extend(message);
-                }
-                self.send(w, record::HANDSHAKE, &flight)
+                keys::wipe(&mut secrets.server);
+                keys::wipe(&mut secrets.master);
+                self.send(w, record::HANDSHAKE, &[extensions, certificate, verify, finished].concat())
             }
             _ => Err(internal()),
         }
@@ -635,10 +523,7 @@ impl<'a, S: Stream> TlsStream<'a, S> {
     /// Handles one record: reads it, lets the state machine decide, and
     /// carries out what it says. `Ok(false)`: nothing came in time.
     fn advance<'s>(&self, reader: &mut ReadSide, mut hs: Option<&mut Handshake<'s>>, served: Option<&Served<'s>>) -> Result<bool, ()> {
-        let (event, data) = match self.read_record(reader, hs.as_deref_mut(), served) {
-            Read::Timeout => return Ok(false),
-            Read::Event(event, data) => (event, data),
-        };
+        let Some((event, data)) = self.read_record(reader, hs.as_deref_mut(), served) else { return Ok(false) };
         let actions = self.step(event);
         // An orderly end is a close_notify the state machine accepted and
         // answers with ours; one it refused (unencrypted after the
@@ -647,95 +532,69 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         if peer_closed && actions == [Action::Alert(Alert::CloseNotify)] {
             self.clean_end.store(true, Ordering::Relaxed);
         }
-        self.carry_out(actions, reader, hs, data, None, &[])?;
-        Ok(true)
+        self.carry_out(actions, reader, hs, data, None, &[]).map(|()| true)
+    }
+
+    /// We end the connection: close_notify, unless it is over already.
+    fn close(&self, writer: MutexGuard<'_, WriteSide>) {
+        let actions = self.step(Event::Close);
+        let _ = self.carry_out(actions, &mut ReadSide::default(), None, Vec::new(), Some(writer), &[]);
     }
 
     /// Runs the handshake as the server. `None` if it did not complete; the
     /// client has then been sent the alert that says why, if it could be.
     pub fn accept(transport: S, served: &Served<'a>, log: &'a dyn Log) -> Option<(Self, &'a Site)> {
         let tls = TlsStream::new(transport, log, served.peer);
-        let mut hs = Handshake {
-            transcript: Transcript::new(),
-            site: None,
-            session_id: Vec::new(),
-            alpn: false,
-            public: [0; 32],
-            shared: [0; 32],
-            secrets: None,
-            finished_hash: [0; HASH_LEN],
-            client_application: [0; HASH_LEN],
-            server_application: [0; HASH_LEN],
-        };
-        let deadline = Instant::now() + served.timeout;
-        {
-            let mut reader = lock(&tls.reader);
-            reader.buffer.set_deadline(Some(deadline));
-            loop {
-                match tls.state().phase {
-                    Phase::Open => break,
-                    Phase::Closed => {
-                        drop(reader);
-                        tls.transport.finish();
-                        return None;
-                    }
-                    _ => {}
-                }
-                match tls.advance(&mut reader, Some(&mut hs), Some(served)) {
-                    Ok(true) => {}
-                    // The deadline passed.
-                    Ok(false) => {
-                        let actions = tls.step(Event::Close);
-                        let _ = tls.carry_out(actions, &mut reader, Some(&mut hs), Vec::new(), None, &[]);
-                    }
-                    Err(()) => {
-                        drop(reader);
-                        tls.transport.shutdown();
-                        return None;
-                    }
-                }
+        let mut hs = Handshake::default();
+        let mut reader = lock(&tls.reader);
+        reader.buffer.set_deadline(Some(Instant::now() + served.timeout));
+        let mut failed = false;
+        while !failed && !matches!(tls.state().phase, Phase::Open | Phase::Closed) {
+            match tls.advance(&mut reader, Some(&mut hs), Some(served)) {
+                Ok(true) => {}
+                // The deadline passed.
+                Ok(false) => tls.close(lock(&tls.writer)),
+                Err(()) => failed = true,
             }
-            reader.buffer.set_deadline(None);
         }
-        let site = hs.site.map(|(site, _)| site)?;
-        Some((tls, site))
+        reader.buffer.set_deadline(None);
+        drop(reader);
+        if failed {
+            tls.transport.shutdown();
+        } else if tls.state().phase == Phase::Closed {
+            tls.transport.finish();
+        } else {
+            return hs.site.map(|(site, _)| (tls, site));
+        }
+        None
     }
+}
 
-    /// Hands out application data, reading records until some comes. The
-    /// buffer's deadline bounds the whole of it.
-    fn read_data(&self, reader: &mut ReadSide, buf: &mut [u8]) -> io::Result<usize> {
-        loop {
+impl<S: Stream> Stream for TlsStream<'_, S> {
+    /// Hands out application data, reading records until some comes.
+    fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut reader = lock(&self.reader);
+        let budget = *lock(&self.read_timeout);
+        reader.buffer.set_deadline(budget.map(|timeout| Instant::now() + timeout));
+        let result = loop {
             if !reader.plain.is_empty() {
                 let n = reader.plain.len().min(buf.len());
                 for (to, from) in buf.iter_mut().zip(reader.plain.drain(..n)) {
                     *to = from;
                 }
-                return Ok(n);
+                break Ok(n);
             }
             if self.state().phase == Phase::Closed {
                 // Only close_notify is an orderly end; a connection cut off,
                 // or ended by an error, is reported as such (section 6).
-                return if self.clean_end.load(Ordering::Relaxed) {
-                    Ok(0)
-                } else {
-                    Err(io::ErrorKind::ConnectionAborted.into())
-                };
+                break if self.clean_end.load(Ordering::Relaxed) { Ok(0) } else { Err(io::ErrorKind::ConnectionAborted.into()) };
             }
-            match self.advance(reader, None, None) {
+            match self.advance(&mut reader, None, None) {
                 Ok(true) => {}
-                Ok(false) => return Err(io::ErrorKind::TimedOut.into()),
-                Err(()) => return Err(io::ErrorKind::BrokenPipe.into()),
+                Ok(false) => break Err(io::ErrorKind::TimedOut.into()),
+                Err(()) => break Err(io::ErrorKind::BrokenPipe.into()),
             }
-        }
-    }
-}
-
-impl<S: Stream> Stream for TlsStream<'_, S> {
-    fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut reader = lock(&self.reader);
-        let budget = *lock(&self.read_timeout);
-        reader.buffer.set_deadline(budget.map(|timeout| Instant::now() + timeout));
-        let result = self.read_data(&mut reader, buf);
+        };
         reader.buffer.set_deadline(None);
         result
     }
@@ -750,8 +609,7 @@ impl<S: Stream> Stream for TlsStream<'_, S> {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
         // Writing never touches the reader's side; an empty one stands in.
-        let mut nothing = ReadSide { buffer: Buffer::new(), keys: Direction::none(), message: Vec::new(), plain: Vec::new(), skipped: 0 };
-        self.carry_out(actions, &mut nothing, None, Vec::new(), Some(writer), buf)
+        self.carry_out(actions, &mut ReadSide::default(), None, Vec::new(), Some(writer), buf)
             .map_err(|()| io::Error::from(io::ErrorKind::BrokenPipe))
     }
 
@@ -765,11 +623,7 @@ impl<S: Stream> Stream for TlsStream<'_, S> {
     /// keep us from shutting the transport down, which is what stops it.
     fn shutdown(&self) {
         match self.writer.try_lock() {
-            Ok(writer) => {
-                let actions = self.step(Event::Close);
-                let mut nothing = ReadSide { buffer: Buffer::new(), keys: Direction::none(), message: Vec::new(), plain: Vec::new(), skipped: 0 };
-                let _ = self.carry_out(actions, &mut nothing, None, Vec::new(), Some(writer), &[]);
-            }
+            Ok(writer) => self.close(writer),
             Err(_) => {
                 self.step(Event::Lost);
             }
@@ -778,10 +632,7 @@ impl<S: Stream> Stream for TlsStream<'_, S> {
     }
 
     fn finish(&self) {
-        let writer = lock(&self.writer);
-        let actions = self.step(Event::Close);
-        let mut nothing = ReadSide { buffer: Buffer::new(), keys: Direction::none(), message: Vec::new(), plain: Vec::new(), skipped: 0 };
-        let _ = self.carry_out(actions, &mut nothing, None, Vec::new(), Some(writer), &[]);
+        self.close(lock(&self.writer));
         self.transport.finish();
     }
 }
@@ -811,7 +662,7 @@ mod tests {
 
     #[test]
     fn the_next_generation_starts_over() {
-        let mut direction = Direction::none();
+        let mut direction = Direction::default();
         direction.switch([5; 32]);
         direction.sequence = 9;
         direction.next();
@@ -822,7 +673,7 @@ mod tests {
 
     #[test]
     fn sequence_numbers_do_not_wrap() {
-        let mut direction = Direction::none();
+        let mut direction = Direction::default();
         direction.sequence = u64::MAX - 1;
         assert_eq!(direction.take_sequence(), Some(u64::MAX - 1));
         assert_eq!(direction.take_sequence(), None);
@@ -839,18 +690,9 @@ mod tests {
         let identity = Identity::load(&certs.join("site.test.chain.pem"), &certs.join("site.test.key")).unwrap();
         let log = Kept::default();
         let tls = open_stream(&log);
-        let mut hs = Handshake {
-            transcript: Transcript::new(),
-            site: Some((&config.sites[0], &identity)),
-            session_id: Vec::new(),
-            alpn: false,
-            public: [0; 32],
-            shared: [0; 32],
-            secrets: Some(keys::handshake_secrets(&[1; 32], &[2; 32])),
-            finished_hash: [0; HASH_LEN],
-            client_application: [0; HASH_LEN],
-            server_application: [0; HASH_LEN],
-        };
+        let mut hs = Handshake::default();
+        hs.site = Some((&config.sites[0], &identity));
+        hs.secrets = Some(keys::handshake_secrets(&[1; 32], &[2; 32]));
         let mut writer = lock(&tls.writer);
         tls.write_action(Action::Send(Kind::Flight), &mut writer, Some(&mut hs), &[]).unwrap();
         let secrets = hs.secrets.as_ref().unwrap();

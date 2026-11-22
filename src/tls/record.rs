@@ -55,10 +55,7 @@ fn need(buffer: &mut Buffer, from: &impl Stream, n: usize) -> Result<(), ReadErr
 /// record stays in the buffer, and the next call goes on from there.
 pub fn read(buffer: &mut Buffer, from: &impl Stream) -> Result<Record, ReadError> {
     need(buffer, from, 5)?;
-    let mut header = [0u8; 5];
-    for (to, from) in header.iter_mut().zip(buffer.pending()) {
-        *to = *from;
-    }
+    let header = *buffer.pending().first_chunk::<5>().ok_or(ReadError::Cut)?;
     // The version is ignored for all purposes (section 5.1). An unknown
     // content type is refused, which also refuses an SSL 2.0 hello and
     // other protocols (section 5, appendix D.5).
@@ -73,10 +70,8 @@ pub fn read(buffer: &mut Buffer, from: &impl Stream) -> Result<Record, ReadError
     if length > limit {
         return Err(ReadError::Refused(Alert::RecordOverflow));
     }
-    need(buffer, from, 5 + length).map_err(|error| match error {
-        ReadError::End => ReadError::Cut,
-        other => other,
-    })?;
+    // With the header pending, an end is a cut.
+    need(buffer, from, 5 + length)?;
     let mut whole = buffer.take_exactly(5 + length).ok_or(ReadError::Cut)?;
     let payload = whole.split_off(5);
     Ok(Record { content_type, header, payload })
@@ -84,25 +79,17 @@ pub fn read(buffer: &mut Buffer, from: &impl Stream) -> Result<Record, ReadError
 
 /// A record whose payload goes as it is.
 pub fn plain(content_type: u8, payload: &[u8]) -> Vec<u8> {
-    let length = u16::try_from(payload.len()).unwrap_or(u16::MAX);
-    let mut record = vec![content_type, 3, 3];
-    record.extend_from_slice(&length.to_be_bytes());
-    record.extend_from_slice(payload);
-    record
+    let length = u16::try_from(payload.len()).unwrap_or(u16::MAX).to_be_bytes();
+    [&[content_type, 3, 3][..], &length, payload].concat()
 }
 
 /// A protected record carrying `content` of this type.
 pub fn seal(keys: &TrafficKeys, sequence: u64, content_type: u8, content: &[u8]) -> Result<Vec<u8>, crypto::Error> {
-    let mut inner = Vec::with_capacity(content.len() + 1);
-    inner.extend_from_slice(content);
-    inner.push(content_type);
-    let length = inner.len().checked_add(TAG_LEN).ok_or(crypto::Error)?;
-    let length = u16::try_from(length).map_err(|_| crypto::Error)?;
-    let mut header = vec![APPLICATION_DATA, 3, 3];
-    header.extend_from_slice(&length.to_be_bytes());
+    let inner = [content, &[content_type]].concat();
+    let length = inner.len().checked_add(TAG_LEN).and_then(|n| u16::try_from(n).ok()).ok_or(crypto::Error)?;
+    let header = [&[APPLICATION_DATA, 3, 3][..], &length.to_be_bytes()].concat();
     let sealed = crypto::aead_seal(&keys.key, &keys.nonce(sequence), &header, &inner)?;
-    header.extend_from_slice(&sealed);
-    Ok(header)
+    Ok([header, sealed].concat())
 }
 
 /// What a protected record held.

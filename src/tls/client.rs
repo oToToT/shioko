@@ -76,7 +76,7 @@ impl Client {
         Client {
             tcp,
             buffer: Buffer::new(),
-            transcript: Transcript::new(),
+            transcript: Transcript::default(),
             read: None,
             write: None,
             secret: SECRET,

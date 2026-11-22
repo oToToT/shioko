@@ -33,13 +33,12 @@ impl<'a> Reader<'a> {
     }
 
     pub fn u16(&mut self) -> Option<u16> {
-        let b = self.bytes(2)?;
-        Some(u16::from_be_bytes([*b.first()?, *b.get(1)?]))
+        Some(u16::from_be_bytes(self.bytes(2)?.try_into().ok()?))
     }
 
     pub fn u24(&mut self) -> Option<usize> {
-        let b = self.bytes(3)?;
-        Some(usize::from(*b.first()?) << 16 | usize::from(*b.get(1)?) << 8 | usize::from(*b.get(2)?))
+        let [a, b, c]: [u8; 3] = self.bytes(3)?.try_into().ok()?;
+        Some(usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c))
     }
 
     /// A vector with a one-byte length, as a reader of its contents.
@@ -71,10 +70,6 @@ pub struct Writer {
 }
 
 impl Writer {
-    pub fn new() -> Writer {
-        Writer::default()
-    }
-
     pub fn u8(&mut self, value: u8) -> &mut Self {
         self.bytes.push(value);
         self
@@ -93,7 +88,7 @@ impl Writer {
     /// A vector with a length of `width` bytes (1, 2 or 3) whose contents
     /// `f` writes. Contents too long for the width are a bug in the caller;
     /// they are written with a truncated length, which the peer refuses.
-    pub fn vec(&mut self, width: usize, f: impl FnOnce(&mut Writer)) -> &mut Self {
+    pub fn vec(&mut self, width: usize, f: impl FnOnce(&mut Writer) -> &mut Writer) -> &mut Self {
         let at = self.bytes.len();
         self.bytes.extend(std::iter::repeat_n(0, width));
         f(self);
@@ -154,15 +149,8 @@ mod tests {
 
     #[test]
     fn vectors_get_their_length() {
-        let mut w = Writer::new();
-        w.vec(2, |w| {
-            w.u8(1).vec(1, |w| {
-                w.raw(b"ab");
-            });
-        })
-        .vec(3, |w| {
-            w.u16(0xbeef);
-        });
+        let mut w = Writer::default();
+        w.vec(2, |w| w.u8(1).vec(1, |w| w.raw(b"ab"))).vec(3, |w| w.u16(0xbeef));
         assert_eq!(w.bytes, [0, 4, 1, 2, b'a', b'b', 0, 0, 2, 0xbe, 0xef]);
     }
 }
