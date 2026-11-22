@@ -13,7 +13,7 @@ use crate::config::{Config, Site};
 use crate::log::{self, Log};
 use crate::net;
 use crate::stream::{self, Buffer, Stream};
-use crate::sync::{self, atomic::AtomicU64, atomic::Ordering};
+use crate::sync::{self, atomic::AtomicBool, atomic::AtomicU64, atomic::Ordering};
 use std::collections::VecDeque;
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
@@ -611,15 +611,30 @@ impl<A: Stream, B: Stream> Drop for ShutBoth<'_, A, B> {
     }
 }
 
+/// Shuts both streams down when it goes out of scope, unless the other
+/// pump of the tunnel has (`ended`). Two shutdowns of a TlsStream at once
+/// would race: the one that finds the write lock taken cuts the transport
+/// from under the other's close_notify.
+struct FirstShutsBoth<'a, A: Stream, B: Stream>(&'a A, &'a B, &'a AtomicBool);
+
+impl<A: Stream, B: Stream> Drop for FirstShutsBoth<'_, A, B> {
+    fn drop(&mut self) {
+        if !self.2.swap(true, Ordering::SeqCst) {
+            self.0.shutdown();
+            self.1.shutdown();
+        }
+    }
+}
+
 /// Copies from one stream to the other until the source ends, a write
 /// fails, or nothing has moved in either direction for too long. Then both
-/// streams are shut down, which is what stops the pump of the other
-/// direction.
-fn pump<A: Stream, B: Stream>(from: &A, to: &B, started: Instant, last: &AtomicU64) {
+/// streams are shut down, by this pump if the other has not ended first,
+/// which is what stops the pump of the other direction.
+fn pump<A: Stream, B: Stream>(from: &A, to: &B, started: Instant, last: &AtomicU64, ended: &AtomicBool) {
     // Dropped last, once both streams are shut down.
     #[cfg(feature = "record")]
     let _stopped = Stopped;
-    let _shut = ShutBoth(from, to);
+    let _shut = FirstShutsBoth(from, to, ended);
     let millis = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut space = vec![0u8; 16 * 1024];
     loop {
@@ -693,6 +708,7 @@ fn tunnel<C: Stream, K: Connect>(
     upstream.set_read_timeout(TUNNEL_IDLE);
     let started = Instant::now();
     let last = AtomicU64::new(0);
+    let ended = AtomicBool::new(false);
     record!("tunnel");
     #[cfg(feature = "record")]
     let me = crate::record::who();
@@ -702,12 +718,12 @@ fn tunnel<C: Stream, K: Connect>(
         let down = sync::spawn_scoped(scope, || {
             #[cfg(feature = "record")]
             crate::record::be(me.replace(" up", " down"), true);
-            pump(upstream, client, started, &last);
+            pump(upstream, client, started, &last, &ended);
         });
         // Without a second thread there is no tunnel; the streams are shut
         // down when we return.
         if down.is_ok() {
-            pump(client, upstream, started, &last);
+            pump(client, upstream, started, &last, &ended);
         }
     });
     #[cfg(feature = "record")]

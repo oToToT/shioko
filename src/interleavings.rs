@@ -182,6 +182,22 @@ fn records(records: &[(u8, &[u8])]) -> Vec<(u8, Vec<u8>)> {
     records.iter().map(|&(content_type, content)| (content_type, content.to_vec())).collect()
 }
 
+/// The upstream ends first while the client stays: the pump that reads
+/// the client is blocked in a read, and the shutdown of the other must
+/// wake it. Everything the upstream sent reaches the client, then
+/// close_notify.
+#[test]
+fn bug_a_tunnel_ending_at_both_ends_at_once_lost_its_close_notify() {
+    every_schedule(|| {
+        let client = Peer::held(records(&[(23, UPGRADE), (23, b"up 1"), (23, b"up 2")]), usize::MAX);
+        let upstream = Pipe::new(&[SWITCHING, b"down 1down 2"].concat(), 5, false);
+        let (down, alert, up) = tunnel(client, upstream);
+        assert_eq!(down, b"down 1down 2");
+        assert_eq!(alert, Some(0));
+        assert!(b"up 1up 2".starts_with(&up), "the upstream got {up:?}");
+    });
+}
+
 /// The client asks for a KeyUpdate while data flows down: the reading pump
 /// sends ours while the other pump sends data, and every record must still
 /// be under the keys of its place (Peer::check follows our KeyUpdate).
