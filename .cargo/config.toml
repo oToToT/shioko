@@ -1,13 +1,3 @@
-# Build only from the vendored sources in vendor/ (see tools/vendor.sh).
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
-
-[net]
-offline = true
-
 # Static Linux binaries, linked with the linker that ships with Rust.
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"

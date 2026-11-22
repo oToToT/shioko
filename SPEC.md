@@ -11,7 +11,7 @@ in `spec/rfc/` cite the sections of this file by number ("SPEC 5").
 - Our own code: Rust `std` only, `#![forbid(unsafe_code)]`, about 3,000
   lines excluding tests.
 - One third-party dependency family: libcrux (formally verified crypto),
-  vendored and pinned in the repository.
+  pinned by version and checksum in `Cargo.lock`.
 - Designs of the three state machines are model-checked in TLA+, and the Rust
   state machines are tested against the checked models.
 - TLS 1.3 only. Restart instead of reload. Development tools (TLC, openssl,
@@ -222,7 +222,6 @@ deploy/            systemd unit, certbot deploy hook, the deployment guide
 ci/                the Docker images of the checks, the end-to-end environment
 tools/             the scripts that run the checks
 patches/           our stand-in for libcrux's CPU detection
-vendor/            libcrux and its dependencies, pinned
 ```
 
 The proxy logic is written against the `Stream` trait, so it is tested over plain
@@ -519,18 +518,18 @@ Decisions:
   ourselves by RFC 6979, with our HMAC-SHA256 (checked against the RFC's
   P-256 vectors), and use `libcrux-ecdsa` only for key validation and DER
   encoding.
-- **Vendoring.** `tools/vendor.sh` fills `vendor/`; `.cargo/config.toml`
-  points Cargo at it and turns networking off. The crates that are compiled
-  are stored unmodified. Cargo's lockfile also lists optional and
-  verification-only crates that are never compiled, and an offline build
-  refuses to start without them, so each is kept as a stub: its upstream
-  `Cargo.toml` and an empty source file. `THIRD-PARTY.md` lists them and
-  their licenses.
-- **Provenance.** The `src/` of the vendored libcrux crates is
-  byte-identical to the upstream repository at the commits recorded in the
-  crates.
+- **Pinning.** `Cargo.toml` names exact versions, and `Cargo.lock` records
+  the SHA-256 checksum of every crate; Cargo downloads them from crates.io
+  and refuses one whose checksum differs, and crates.io never lets a
+  published version change. The checks download the crates once, with
+  `cargo fetch --locked` while their images are set up, and then run with
+  networking off. `THIRD-PARTY.md` lists the crates and their licenses.
+- **Provenance.** The `src/` of the pinned libcrux crates was compared with
+  the upstream repository at the commits recorded in the crates, and is
+  byte-identical.
 - **Version choice.** The audited release above is the one we pin.
-- **Updates** are manual: read the diff, re-run the full test suite, commit.
+- **Updates** are manual: read the diff of the crates' sources, re-run the
+  full test suite, commit the new `Cargo.lock`.
 - Only `crypto.rs` imports libcrux.
 - **ML-KEM** is called through `mlkem768::portable` only, with
   libcrux-ml-kem's default features off: no SIMD, no `rand`. The SIMD
@@ -827,6 +826,10 @@ port 80 is reachable by the ACME server.
   fuzzing.
 - **TLA+ checks the model.** The mechanical link covers the two state
   machines, not the byte-level parsers or the threading code.
+- **Building needs crates.io.** `Cargo.lock`'s checksums make a changed
+  crate fail the build, but a build cannot happen while crates.io (or a
+  mirror of it) is unreachable, and the crates' build scripts run on the
+  machine that builds, as for any Rust project.
 - **Thread-per-connection** means 512 slow clients can exhaust the cap on a
   host without an allowlist. nginx has the same weakness at a higher number.
 - **Old clients** without TLS 1.3, ChaCha20-Poly1305 or X25519 cannot connect.

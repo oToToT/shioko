@@ -102,10 +102,10 @@ of your clients would be refused, before you switch.
 
 ## Getting started
 
-You need Rust ([rustup](https://rustup.rs)). Everything else is vendored,
-so after the toolchain is installed the build needs no network. Build on
-Linux or macOS, for the architecture of the server (`uname -m` there says
-`x86_64` or `aarch64`):
+You need Rust ([rustup](https://rustup.rs)) and access to crates.io: the
+build downloads libcrux and the few crates it needs, at the exact versions
+and checksums recorded in `Cargo.lock`. Build on Linux or macOS, for the
+architecture of the server (`uname -m` there says `x86_64` or `aarch64`):
 
 ```
 git clone https://github.com/oToToT/Shioko.git shioko
@@ -246,5 +246,6 @@ spec as a whole behaviour (`tools/tlstrace.py`, `spec/HandshakeTrace.tla`).
 
 shioko is licensed under either of the [Apache License, Version
 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
-`vendor/` holds libcrux (Apache-2.0) and the crates it needs, and
-`spec/rfc/` the RFC texts; `THIRD-PARTY.md` lists them with their terms.
+shioko is built with libcrux (Apache-2.0) and a few other crates, and the
+repository holds RFC texts and test vectors; `THIRD-PARTY.md` lists them
+with their terms.

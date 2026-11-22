@@ -5,6 +5,10 @@ WORKDIR /src
 COPY rust-toolchain.toml .
 RUN rustup toolchain install
 COPY . .
+# The crates of Cargo.lock, checked against its checksums; the network is
+# used here and nowhere after.
+RUN cargo fetch --locked
+ENV CARGO_NET_OFFLINE=true
 RUN --network=none cargo build --locked --release
 
 FROM debian:trixie-slim

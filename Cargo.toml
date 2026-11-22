@@ -8,8 +8,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/oToToT/Shioko"
 publish = false
 
-# The only third-party code: libcrux (formally verified crypto), vendored in
-# vendor/ and pinned to exact versions. Only src/crypto.rs may use these.
+# The only third-party code: libcrux (formally verified crypto), pinned to
+# exact versions here and by checksum in Cargo.lock. Only src/crypto.rs may
+# use these.
 [dependencies]
 libcrux-sha2 = "=0.0.10"
 libcrux-chacha20poly1305 = "=0.0.11"

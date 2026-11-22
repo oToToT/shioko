@@ -1,6 +1,7 @@
 #!/bin/sh
 # Every check a change must pass. Runs on a developer machine and, through
-# tools/ci.sh, inside Linux containers. Needs no network.
+# tools/ci.sh, inside Linux containers. Needs no network once the crates of
+# Cargo.lock are downloaded (cargo fetch --locked).
 set -eu
 cd "$(dirname "$0")/.."
 

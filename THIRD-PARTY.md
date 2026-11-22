@@ -1,27 +1,24 @@
 # Third-party material
 
 shioko's own code is licensed under MIT OR Apache-2.0 (`LICENSE-MIT`,
-`LICENSE-APACHE`). This repository also contains the following, each under
-its own terms.
+`LICENSE-APACHE`).
 
-## Vendored crates (`vendor/`)
+## Crates shioko is built with
 
-`tools/vendor.sh` fills `vendor/` from `Cargo.lock`. The exact versions are
-in `Cargo.lock`.
+They are not in this repository: Cargo downloads them from crates.io at the
+exact versions and checksums in `Cargo.lock`. A binary built from this
+repository contains their code.
 
-- **libcrux** by Cryspen, <https://github.com/cryspen/libcrux>, licensed
-  under Apache-2.0, whose text is `LICENSE-APACHE` at the top of this
-  repository. These crates are compiled into shioko and stored unmodified:
-  `libcrux-chacha20poly1305`, `libcrux-curve25519`, `libcrux-ecdsa`,
-  `libcrux-hacl-rs`, `libcrux-intrinsics`, `libcrux-macros`,
-  `libcrux-ml-kem`, `libcrux-p256`, `libcrux-poly1305`, `libcrux-secrets`,
-  `libcrux-sha2`, `libcrux-sha3`, `libcrux-traits`.
-- **`rand`, `rand_core`, `syn`, `quote`, `proc-macro2`, `unicode-ident`**,
-  stored unmodified with their license files. `rand` and `rand_core` supply
-  trait definitions; the others run only at build time.
-- **Every other directory in `vendor/`** is a stub of a crate that
-  `Cargo.lock` lists but that is never compiled: its upstream `Cargo.toml`
-  and an empty source file, no code.
+- **libcrux** by Cryspen, <https://github.com/cryspen/libcrux>, Apache-2.0
+  (the text is `LICENSE-APACHE`): `libcrux-chacha20poly1305`,
+  `libcrux-curve25519`, `libcrux-ecdsa`, `libcrux-hacl-rs`,
+  `libcrux-intrinsics`, `libcrux-macros`, `libcrux-ml-kem`, `libcrux-p256`,
+  `libcrux-poly1305`, `libcrux-secrets`, `libcrux-sha2`, `libcrux-sha3`,
+  `libcrux-traits`.
+- **`rand` and `rand_core`**, MIT OR Apache-2.0: trait definitions only.
+- **`syn`, `quote`, `proc-macro2`** (MIT OR Apache-2.0) and
+  **`unicode-ident`** ((MIT OR Apache-2.0) AND Unicode-3.0) run only while
+  building, inside procedural macros; none of their code is in the binary.
 
 `patches/libcrux-platform` is not libcrux code: it is shioko's own
 stand-in for libcrux's CPU-feature detection, under shioko's license.
