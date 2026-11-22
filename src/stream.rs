@@ -30,8 +30,37 @@ impl Stream for TcpStream {
         Read::read(&mut &*self, buf)
     }
 
+    /// Writes all of `buf` within the socket's write timeout: one budget for
+    /// the whole buffer, not one for each piece the kernel takes, so that a
+    /// peer reading a byte now and then cannot keep a write going for ever.
+    /// (A TLS record, or a piece of a body, is at most 16 KB: a peer must
+    /// read that much within the timeout, about 270 bytes a second.) This
+    /// relies on Linux, where one write call waits at most its timeout in
+    /// all; the BSDs start it again at each wait.
     fn write_all(&self, buf: &[u8]) -> io::Result<()> {
-        Write::write_all(&mut &*self, buf)
+        let Some(budget) = TcpStream::write_timeout(self)? else {
+            return Write::write_all(&mut &*self, buf);
+        };
+        let deadline = Instant::now() + budget;
+        let mut rest = buf;
+        let written = loop {
+            if rest.is_empty() {
+                break Ok(());
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break Err(io::ErrorKind::TimedOut.into());
+            }
+            let _ = TcpStream::set_write_timeout(self, Some(left));
+            match Write::write(&mut &*self, rest) {
+                Ok(0) => break Err(io::ErrorKind::WriteZero.into()),
+                Ok(n) => rest = rest.get(n..).unwrap_or_default(),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => break Err(error),
+            }
+        };
+        let _ = TcpStream::set_write_timeout(self, Some(budget));
+        written
     }
 
     fn set_read_timeout(&self, timeout: Duration) {
@@ -88,8 +117,18 @@ pub struct Buffer {
     data: Vec<u8>,
     start: usize,
     timed_out: bool,
-    /// When set, the reads `line` makes must all be done by then.
+    /// When set, the reads `line` and `read` make must all be done by then.
     deadline: Option<Instant>,
+    /// When set, the deadline moves on by this window each time this many
+    /// bytes have been taken out: the bytes taken since it last moved.
+    pace: Option<Pace>,
+}
+
+/// A pace a peer must keep up: `step` bytes within each `window`.
+struct Pace {
+    step: usize,
+    window: Duration,
+    taken: usize,
 }
 
 impl Buffer {
@@ -108,6 +147,33 @@ impl Buffer {
             self.data.clear();
             self.start = 0;
         }
+        self.taken(n);
+    }
+
+    /// Counts bytes taken out against the pace, if one is kept. A step
+    /// complete in time moves the deadline on; one complete only after the
+    /// deadline does not, so the next read fails.
+    fn taken(&mut self, n: usize) {
+        if let Some(pace) = &mut self.pace {
+            pace.taken = pace.taken.saturating_add(n);
+            if pace.taken >= pace.step {
+                pace.taken = 0;
+                let now = Instant::now();
+                if self.deadline.is_none_or(|deadline| now <= deadline) {
+                    self.deadline = Some(now + pace.window);
+                }
+            }
+        }
+    }
+
+    /// From now on, until lifted with `None`, the peer must keep up a pace:
+    /// each `step` bytes taken out within `window`, counted from now and
+    /// from each time a step is complete. A long body may then take as long
+    /// as it needs, as long as it keeps coming; one that trickles in is cut
+    /// off. Lifting it lifts the deadline too.
+    pub fn set_pace(&mut self, pace: Option<(usize, Duration)>) {
+        self.pace = pace.map(|(step, window)| Pace { step, window, taken: 0 });
+        self.deadline = pace.map(|(_, window)| Instant::now() + window);
     }
 
     /// Takes everything read and not yet used.
@@ -115,15 +181,17 @@ impl Buffer {
         self.take_exactly(self.pending().len()).unwrap_or_default()
     }
 
-    /// From now on the reads made by `line` must be done by `deadline`, so
-    /// that a peer cannot keep a line open by sending it slowly. `None`
-    /// lifts the limit; reads then wait as long as the stream's own timeout.
+    /// From now on the reads made by `line` and `read` must be done by
+    /// `deadline`, so that a peer cannot keep a line open by sending it
+    /// slowly. `None` lifts the limit; reads then wait as long as the
+    /// stream's own timeout.
     pub fn set_deadline(&mut self, deadline: Option<Instant>) {
         self.deadline = deadline;
     }
 
-    /// One read from the stream, added to the pending bytes.
-    fn fill(&mut self, stream: &impl Stream) -> io::Result<usize> {
+    /// Before a read from the stream: fails if the deadline has passed,
+    /// otherwise lets the read wait only until then.
+    fn before_read(&mut self, stream: &impl Stream) -> io::Result<()> {
         if let Some(deadline) = self.deadline {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -132,6 +200,12 @@ impl Buffer {
             }
             stream.set_read_timeout(left);
         }
+        Ok(())
+    }
+
+    /// One read from the stream, added to the pending bytes.
+    fn fill(&mut self, stream: &impl Stream) -> io::Result<usize> {
+        self.before_read(stream)?;
         let old = self.data.len();
         self.data.resize(old.saturating_add(READ_SIZE), 0);
         let result = stream.read(self.data.get_mut(old..).unwrap_or_default());
@@ -168,7 +242,11 @@ impl Buffer {
     /// stream only when none are pending. `Ok(0)` is the end of the stream.
     pub fn read(&mut self, stream: &impl Stream, out: &mut [u8]) -> io::Result<usize> {
         if self.pending().is_empty() {
-            return stream.read(out);
+            self.before_read(stream)?;
+            let result = stream.read(out);
+            self.timed_out = result.as_ref().is_err_and(timed_out);
+            self.taken(*result.as_ref().unwrap_or(&0));
+            return result;
         }
         let n = self.pending().len().min(out.len());
         out.iter_mut().zip(self.pending()).for_each(|(to, from)| *to = *from);
@@ -496,5 +574,38 @@ mod tests {
         buffer.line(&stream, 100).unwrap();
         assert_eq!(buffer.take(), b"raw bytes");
         assert!(buffer.pending().is_empty());
+    }
+
+    /// Bug (found in review): the write timeout applied to each piece the
+    /// kernel took, so a peer that read a little now and then, never enough
+    /// to finish, kept a write, and its connection, going for ever. The
+    /// whole buffer must now be written within the timeout. Linux only:
+    /// there one write call waits at most its timeout in all, while the BSDs
+    /// and macOS start the timeout again at each wait, so a single call can
+    /// last as long as the peer keeps reading.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bug_a_peer_reading_now_and_then_kept_a_write_going() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let reader = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (writer, _) = listener.accept().unwrap();
+        writer.set_write_timeout(Some(Duration::from_millis(500))).unwrap();
+        // 64 KB every 50 ms: each piece of the write moves on well within
+        // its timeout, but 16 MB would take more than ten seconds.
+        let draining = std::thread::spawn(move || {
+            let mut space = vec![0u8; 64 * 1024];
+            while let Ok(1..) = Stream::read(&reader, &mut space) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let started = Instant::now();
+        let written = Stream::write_all(&writer, &vec![0u8; 16 << 20]);
+        let took = started.elapsed();
+        assert!(written.is_err(), "16 MB went out at 1.3 MB/s within half a second");
+        assert!(took < Duration::from_secs(3), "the write went on for {took:?}");
+        // The budget is the socket's again afterwards.
+        assert_eq!(writer.write_timeout().unwrap(), Some(Duration::from_millis(500)));
+        drop(writer);
+        draining.join().unwrap();
     }
 }

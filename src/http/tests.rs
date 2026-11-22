@@ -1989,7 +1989,7 @@ fn bug_redirect_refused_what_browsers_send() {
 fn bug_slow_head_was_never_cut_off() {
     use std::time::Duration;
     let slow = |text: &str| Step::Slow(Duration::from_millis(40), text.as_bytes().to_vec());
-    let timeouts = Timeouts { head: Duration::from_millis(100), keep_alive: Duration::from_millis(100) };
+    let timeouts = Timeouts { head: Duration::from_millis(100), keep_alive: Duration::from_millis(100), ..Timeouts::STANDARD };
     let talk = Talk { timeouts, ..Talk::default() };
     // Each piece comes well within the limit; the head as a whole does not.
     let pieces = ["GET / ", "HTTP/1.1\r\n", "Host: ", "site.test", "\r\n", "\r\n"];
@@ -2003,9 +2003,39 @@ fn bug_slow_head_was_never_cut_off() {
     assert_eq!(sent.len(), 1);
     assert_eq!(received.matches("HTTP/1.1 200 ").count(), 1);
     // Quick enough, it is served.
-    let quick = Talk { timeouts: Timeouts { head: Duration::from_secs(5), keep_alive: Duration::from_secs(5) }, ..Talk::default() };
+    let quick = Talk {
+        timeouts: Timeouts { head: Duration::from_secs(5), keep_alive: Duration::from_secs(5), ..Timeouts::STANDARD },
+        ..Talk::default()
+    };
     let (_, sent, _) = quick.steps(pieces.iter().map(|p| slow(p)).collect(), vec![vec![Step::Data(PLAIN_OK.as_bytes().to_vec())]]);
     assert_eq!(sent.len(), 1);
+}
+
+/// Bug (found in review): a request body could trickle in, a byte now and
+/// then within each read's timeout, and so hold its connection for as long
+/// as the client liked. Each `body_step` bytes must now arrive within the
+/// body window; a body that keeps that pace may take as long as it needs.
+#[test]
+fn bug_a_body_trickling_in_held_its_connection() {
+    use std::time::Duration;
+    let timeouts = Timeouts { body: Duration::from_millis(150), body_step: 2, ..Timeouts::STANDARD };
+    let talk = Talk { timeouts, ..Talk::default() };
+    let head = format!("POST /up HTTP/1.1\r\nHost: site.test\r\nContent-Length: {MAX_BODY}\r\n\r\n");
+    let paced = |piece: usize| {
+        let mut steps = vec![Step::Data(head.clone().into_bytes())];
+        steps.extend((0..MAX_BODY / piece).map(|_| Step::Slow(Duration::from_millis(100), vec![b'x'; piece])));
+        talk.steps(steps, vec![vec![Step::Data(PLAIN_OK.as_bytes().to_vec())]])
+    };
+    // A byte every 100 ms, a step every 200 ms: slower than the window, so
+    // the request goes no further.
+    let (received, sent, _) = paced(1);
+    assert!(!sent[0].ends_with(&"x".repeat(MAX_BODY)), "the whole body went through: {:?}", sent[0]);
+    assert_eq!(received, "");
+    // Two bytes every 100 ms, each step within the window, the whole body
+    // longer than it: served.
+    let (received, sent, _) = paced(2);
+    assert!(sent[0].ends_with(&"x".repeat(MAX_BODY)), "{:?}", sent[0]);
+    assert!(received.starts_with("HTTP/1.1 200 "), "{received:?}");
 }
 
 /// Bug: an upstream at 0.0.0.0 port 80 was allowed, which on Linux is this

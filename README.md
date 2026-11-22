@@ -157,7 +157,9 @@ allowlisted sites (fewer than 512, with a warning at startup, if the
 open-file limit is below 2064); 5 s to connect to an upstream (nginx waits
 60 s); as
 in nginx, 60 s of silence from an upstream or on a WebSocket, and 75 s for
-an idle keep-alive connection. A name that only needs a
+an idle keep-alive connection; a request body must keep up 64 KiB a
+minute, and a client must take each piece we write (at most 16 KB) within
+60 s, so slow clients cannot hold connections for free. A name that only needs a
 certificate, a mail server's for instance, needs no section. An unknown
 hostname gets a 404 or, over TLS, an `unrecognized_name` alert.
 

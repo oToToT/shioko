@@ -11,7 +11,10 @@
    the same side, while a request from the other side is served at once.
    The head deadline (60 s) must end the slow ones, and the server must
    serve normally afterwards.
-3. 50 WebSockets open for MINUTES, a message a second each, every echo
+3. 64 slow uploads from outside, over TLS: each starts a 1 MB body and
+   sends a byte every 5 s. A body must keep up 64 KiB a minute, so all must
+   be cut after about a minute, while the server serves normally.
+4. 50 WebSockets open for MINUTES, a message a second each, every echo
    checked.
 
 Prints the numbers and writes them to /results/soak.json.
@@ -19,6 +22,7 @@ Prints the numbers and writes them to /results/soak.json.
 
 import json
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -74,7 +78,8 @@ def gone(s):
     s.setblocking(False)
     try:
         closed = s.recv(1) == b""
-    except BlockingIOError:
+    except (BlockingIOError, ssl.SSLWantReadError):
+        # Nothing to read yet; over TLS this is how it says so.
         closed = False
     except OSError:
         closed = True
@@ -136,6 +141,40 @@ def slow_clients(count, side):
     }
 
 
+def slow_bodies(count, side="outside"):
+    socks = []
+    for _ in range(count):
+        try:
+            s = connect(SHIOKO[side], "chat.test", side=side, timeout=10)
+            s.sendall(b"POST /count HTTP/1.1\r\nHost: chat.test\r\nContent-Length: 1000000\r\n\r\nx")
+            socks.append(s)
+        except OSError:
+            break
+    started = time.time()
+    alive = list(socks)
+    meanwhile = None
+    while alive and time.time() - started < 150:
+        time.sleep(5)
+        if meanwhile is None:
+            meanwhile = ordinary("inside")
+        still = []
+        for s in alive:
+            try:
+                s.sendall(b"x")
+                still.append(s)
+            except OSError:
+                s.close()
+        alive = [s for s in still if not gone(s)]
+    ended = time.time() - started
+    for s in socks:
+        s.close()
+    numbers["slow bodies from " + side] = {
+        "opened": len(socks), "still open after 150 s": len(alive),
+        "all ended after s": round(ended, 1),
+        "a request from inside meanwhile took s": meanwhile,
+    }
+
+
 def websockets(count, seconds):
     failed, messages = [], [0]
     lock = threading.Lock()
@@ -179,6 +218,7 @@ if __name__ == "__main__":
     for name, run in (("500 connections", lambda: many_connections(500, int(minutes * 60))),
                       ("600 slow clients from outside", lambda: slow_clients(600, "outside")),
                       ("600 slow clients from inside", lambda: slow_clients(600, "inside")),
+                      ("64 slow bodies from outside", lambda: slow_bodies(64)),
                       ("50 WebSockets", lambda: websockets(50, int(minutes * 60)))):
         print("== " + name, flush=True)
         run()
@@ -186,6 +226,10 @@ if __name__ == "__main__":
     with open("/results/soak.json", "w") as f:
         json.dump(numbers, f, indent=1)
     bad = numbers["connections"]["failed connections"] or numbers["websockets"]["failed"]
+    slow = numbers["slow bodies from outside"]
+    # Held until the pace ends them, a minute after their heads, not before.
+    bad = bad or slow["opened"] != 64 or slow["still open after 150 s"] \
+        or not 50 <= slow["all ended after s"] <= 80 or slow["a request from inside meanwhile took s"] is None
     for side, other, cap in (("outside", "inside", 64), ("inside", "outside", 512)):
         slow = numbers["slow clients from " + side]
         meanwhile = slow["a request from %s meanwhile took s" % other]

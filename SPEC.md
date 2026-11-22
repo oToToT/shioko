@@ -214,6 +214,8 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
 | TLS handshake deadline | 10 s |
 | Request head size / header count | 16 KB / 100 |
 | Request head read timeout | 60 s |
+| Request body pace | each 64 KiB within 60 s (about 1 KB/s) |
+| A write to a client (a TLS record or a body piece, at most 16 KB) | 60 s in all |
 | Client keep-alive idle | 75 s |
 | Upstream connect timeout | 5 s |
 | Upstream read / write idle | 60 s |
@@ -408,6 +410,15 @@ Requests:
   usable `Host`.
 - **The whole head** must arrive within 60 seconds (75 for the next request
   on a kept connection), however slowly it trickles in.
+- **A request body must keep a pace**: each 64 KiB within 60 seconds,
+  counted from the end of the head and from each 64 KiB. A body that keeps
+  it may take as long as it needs; one that falls behind is cut off, and the
+  connection with it.
+- **A slow reader is cut off too.** Each write to a client, a TLS record or
+  a piece of a body of at most 16 KB, must be done within 60 seconds in
+  all (Linux bounds a write call so; the BSDs would not), so a client must
+  read about 270 bytes a second while there is something to read. A quiet
+  upstream asks nothing of the client.
 - **Strict head parsing.** Rejected with 400: both `Content-Length` and
   `Transfer-Encoding`, repeated or non-numeric `Content-Length`, a malformed
   `Transfer-Encoding` or one that does not end in `chunked`,
@@ -908,10 +919,15 @@ port 80 is reachable by the ACME server.
   crate fail the build, but a build cannot happen while crates.io (or a
   mirror of it) is unreachable, and the crates' build scripts run on the
   machine that builds, as for any Rust project.
-- **Thread-per-connection** means slow clients from 8 or more addresses
-  (512 at 64 each) can fill the public pool, so sites without an allowlist
-  stop answering while they hold it; sites behind an allowlist keep their
-  own pool. nginx has the same weakness at a higher number.
+- **Thread-per-connection** means clients from 8 or more addresses (512 at
+  64 each) can fill the public pool, so sites without an allowlist stop
+  answering while they hold it; sites behind an allowlist keep their own
+  pool. Holding a slot is no longer free: a request head must be whole
+  within 60 s, a body must keep 64 KiB a minute, and a client must read
+  what we write at about 270 bytes a second, so the attacker must keep
+  sending or reading at those rates on every connection. A WebSocket on a
+  site that allows them is held by a message a minute, as in nginx. nginx
+  has the same weakness at a higher number.
 - **A full pool turns connections away** rather than queueing them, so a
   burst of more than 512 allowlisted connections at once (from a CDN, say)
   sees the rest closed.

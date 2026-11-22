@@ -24,16 +24,25 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug)]
 pub struct Timeouts {
     /// The first request head on a connection must arrive whole within
-    /// this; the client may also pause this long while sending a body.
+    /// this.
     pub head: Duration,
     /// The next request head on a kept connection must arrive whole within
     /// this, counted from the end of the response before.
     pub keep_alive: Duration,
+    /// Each `body_step` bytes of a request body must arrive within this, so
+    /// that a body cannot hold a connection by trickling in.
+    pub body: Duration,
+    pub body_step: usize,
 }
 
 impl Timeouts {
-    pub const STANDARD: Timeouts =
-        Timeouts { head: Duration::from_secs(60), keep_alive: Duration::from_secs(75) };
+    /// A request body must keep up 64 KiB a minute, about 1 KB/s.
+    pub const STANDARD: Timeouts = Timeouts {
+        head: Duration::from_secs(60),
+        keep_alive: Duration::from_secs(75),
+        body: Duration::from_secs(60),
+        body_step: 64 * 1024,
+    };
 }
 /// How long connecting to an upstream may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -454,11 +463,13 @@ fn forward<C: Stream, K: Connect>(
     if upstream.write_all(&upstream_head(request, context, exchange)).is_err() {
         return Event::Fail(502);
     }
+    input.set_pace(Some((context.timeouts.body_step, context.timeouts.body)));
     let copied = match exchange.framing {
         Framing::Length => body::copy_length(input, client, upstream, exchange.length),
         Framing::Chunked => body::copy_chunked(input, client, upstream, site.max_body, true),
         _ => Ok(()),
     };
+    input.set_pace(None);
     match copied {
         Ok(()) => Event::Sent,
         Err(CopyError::Source | CopyError::SourceTimeout) => Event::Gone,
