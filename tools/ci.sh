@@ -19,6 +19,9 @@ docker build --file ci/kani.Dockerfile --progress plain --tag shioko-ci:kani .
 echo "==== interop with OpenSSL and curl"
 docker build --file ci/interop.Dockerfile --progress plain --tag shioko-ci:interop .
 
+echo "==== the systemd unit"
+docker build --file ci/unit.Dockerfile --progress plain --tag shioko-ci:unit .
+
 echo "==== tlsfuzzer, and its recorded runs checked by TLC"
 docker build --file ci/tlsfuzzer.Dockerfile --progress plain --tag shioko-ci:tlsfuzzer .
 
@@ -28,4 +31,4 @@ for platform in ${*:-linux/amd64 linux/arm64}; do
         --tag "shioko-ci:$(basename "$platform")" .
 done
 
-echo "==== CI passed: specs proofs interop tlsfuzzer ${*:-linux/amd64 linux/arm64}"
+echo "==== CI passed: specs proofs interop unit tlsfuzzer ${*:-linux/amd64 linux/arm64}"

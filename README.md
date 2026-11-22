@@ -4,10 +4,10 @@ A minimal TLS-terminating reverse proxy, written to replace nginx on a
 handful of small hosts. It routes by hostname to one local HTTP upstream per
 site, passes WebSocket upgrades through, and serves ACME tokens on port 80.
 
-Status: HTTP (port 80) and TLS 1.3 (port 443) are written and tested,
-including against OpenSSL and curl. Deployment pieces (systemd unit, certbot
-hook, an end-to-end Docker environment) are next. `PLAN.md` holds the full
-plan and the milestones.
+Status: ready to deploy. HTTP (port 80) and TLS 1.3 (port 443) are written
+and tested, against OpenSSL, curl and tlsfuzzer, and end to end in Docker
+with real Vaultwarden, Jellyfin and certbot. `deploy/` has the systemd unit,
+the certbot hook and the deployment guide.
 
 ## What it is built from
 
@@ -33,7 +33,18 @@ allow     = /etc/shioko/cloudflare.txt
 max-body  = 525M
 ```
 
-`PLAN.md` section 3 describes the six keys.
+The six keys: `upstream` (required), `cert` and `key` (together; without
+them the site is plain HTTP), `websocket` (`yes` to let upgrades through),
+`allow` (address ranges and files of them), `max-body` (default `1M`).
+`shioko check` validates a configuration without starting the server.
+`deploy/README.md` is the deployment guide.
+
+### Not in v1
+
+Each would be one new key, with no change to existing configurations:
+redirects, path-based routing, per-site timeouts, added response headers,
+static files, wildcard hostnames, Unix-socket or HTTPS upstreams, several
+upstreams per site.
 
 ## Where it does not follow the RFCs
 
@@ -86,6 +97,11 @@ tools/prove.sh         # Kani proofs
 tools/interop.sh       # a real shioko against OpenSSL and curl
 tools/ci.sh            # all of the above in Linux containers, and tlsfuzzer
 ```
+
+`tools/e2e.sh [soak MINUTES]` runs the end-to-end environment of `ci/e2e/`
+(needs Docker and network to pull images): shioko as deployed, nginx for
+comparison, Vaultwarden, Jellyfin, a test upstream, and Pebble issuing a
+certificate to certbot through shioko. Results go to `target/e2e/`.
 
 `tools/ci.sh` also runs every TLS 1.3 script of tlsfuzzer against shioko
 (`ci/tlsfuzzer.Dockerfile`, `tools/tlsfuzzer.sh`). The probes expected to

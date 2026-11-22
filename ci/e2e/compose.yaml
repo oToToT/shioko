@@ -1,0 +1,102 @@
+# The end-to-end environment (tools/e2e.sh runs it). shioko and nginx serve
+# the same sites in front of the same upstreams: real Vaultwarden and
+# Jellyfin, and a test upstream of our own. Clients sit on two networks:
+# from "inside" they pass the allowlists, from "outside" they do not.
+# Pebble, Let's Encrypt's test ACME server, issues a certificate through
+# shioko's port 80 to certbot.
+name: shioko-e2e
+
+x-tools: &tools
+  build: { context: ../.., dockerfile: ci/e2e/tools.Dockerfile }
+  image: shioko-e2e-tools
+
+services:
+  setup:
+    <<: *tools
+    command: ["./setup.sh"]
+    volumes: [certs:/certs]
+
+  upstream:
+    <<: *tools
+    command: ["python3", "upstream.py", "8080"]
+    networks: { inside: { ipv4_address: 10.88.0.20 } }
+
+  vaultwarden:
+    image: vaultwarden/server:1.37.5
+    environment:
+      DOMAIN: https://vault.test
+      ROCKET_PORT: "80"
+    tmpfs: [/data]
+    networks: { inside: { ipv4_address: 10.88.0.21 } }
+
+  jellyfin:
+    image: jellyfin/jellyfin:10.11.11
+    tmpfs: [/config, /cache]
+    networks: { inside: { ipv4_address: 10.88.0.22 } }
+
+  shioko:
+    build: { context: ../.., dockerfile: ci/e2e/shioko.Dockerfile }
+    image: shioko-e2e
+    user: shioko
+    volumes:
+      - certs:/certs:ro
+      - ./shioko.conf:/etc/shioko/shioko.conf:ro
+      - acme:/var/lib/shioko/acme
+    depends_on: { setup: { condition: service_completed_successfully } }
+    networks:
+      inside: { ipv4_address: 10.88.0.2 }
+      outside: { ipv4_address: 10.89.0.2 }
+
+  nginx:
+    image: nginx:1.30.7-alpine
+    volumes:
+      - certs:/certs:ro
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - acme:/var/lib/shioko/acme:ro
+    depends_on: { setup: { condition: service_completed_successfully } }
+    networks:
+      inside: { ipv4_address: 10.88.0.3 }
+      outside: { ipv4_address: 10.89.0.3 }
+
+  challtestsrv:
+    image: ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1
+    # Every name resolves to shioko.
+    command: ["-defaultIPv4", "10.88.0.2", "-defaultIPv6", "", "-dnsserver", ":8053",
+              "-http01", "", "-https01", "", "-tlsalpn01", "", "-doh", ""]
+    networks: { inside: { ipv4_address: 10.88.0.31 } }
+
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:2.10.1
+    command: ["-config", "/e2e/pebble.json", "-dnsserver", "10.88.0.31:8053"]
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+    volumes: ["./pebble.json:/e2e/pebble.json:ro"]
+    networks: { inside: { ipv4_address: 10.88.0.30 } }
+
+  certbot:
+    image: certbot/certbot:v5.10.0
+    profiles: [run]
+    volumes: [acme:/var/lib/shioko/acme]
+    networks: { inside: { ipv4_address: 10.88.0.32 } }
+
+  client:
+    <<: *tools
+    profiles: [run]
+    volumes:
+      - certs:/certs:ro
+      - acme:/var/lib/shioko/acme
+      - ../../target/e2e:/results
+    networks:
+      inside: { ipv4_address: 10.88.0.10 }
+      outside: { ipv4_address: 10.89.0.10 }
+
+volumes:
+  certs:
+  acme:
+
+networks:
+  inside:
+    ipam: { config: [{ subnet: 10.88.0.0/24 }] }
+  outside:
+    ipam: { config: [{ subnet: 10.89.0.0/24 }] }
