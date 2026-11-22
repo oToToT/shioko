@@ -1,0 +1,115 @@
+# The tlsfuzzer scripts tools/tlsfuzzer.sh runs against shioko, and the
+# probes expected to fail, with the error each must fail with and why.
+# Every other probe must pass. tools/tlsfuzzer-run.py reads this file.
+#
+#   run SCRIPT [OPTIONS]          run every probe of the script
+#       fail REGEX ~ ERROR ~ WHY  probes whose name matches REGEX must fail,
+#                                 with ERROR in the message; the first
+#                                 matching line counts, and a line that
+#                                 matches no probe is an error
+#   skip SCRIPT ~ WHY             not run
+#
+# Each script runs through tools/tlsfuzzer-profile.py, which makes its
+# ClientHellos offer our cipher suite, group and signature scheme and a
+# server name. Some probes are about exactly what it changed; they are
+# marked "adapted".
+#
+# The reasons, in short:
+#   profile   shioko offers TLS 1.3 with TLS_CHACHA20_POLY1305_SHA256,
+#             X25519 and ecdsa_secp256r1_sha256 only (README, PLAN.md 5)
+#   no 1.2    TLS 1.2 and older are refused with protocol_version
+#   no psk    no tickets, no resumption, no external PSKs
+
+run test-tls13-0rtt-garbage.py
+    fail ^handshake with invalid 0-RTT and unknown version \(downgrade to TLS 1\.2\)$ ~ protocol_version ~ no 1.2
+run test-tls13-ccs.py
+run test-tls13-certificate-compression.py
+    fail ^sending extension in TLS-1\.2$ ~ protocol_version ~ no 1.2
+    fail zlib|brotli|^duplicated algos$ ~ Handshake(certificate) ~ certificate compression (RFC 8879) is not implemented: the Certificate goes uncompressed
+    fail extension|^empty list$|^odd len of list$ ~ Handshake(server_hello) ~ certificate compression is not implemented, so a malformed compress_certificate extension is ignored like any unknown one
+run test-tls13-connection-abort.py
+    fail ^"After NewSessionTicket" repeat \d+$ ~ ApplicationData ~ no psk: no NewSessionTicket is sent
+run test-tls13-conversation.py
+run test-tls13-count-tickets.py
+run test-tls13-crfg-curves.py
+    fail ^empty x(448|25519) key share$ ~ "decode_error" ~ an empty key_exchange is shorter than its vector's minimum of 1, which makes it a decode error; tlsfuzzer wants illegal_parameter
+    fail x448 ~ handshake_failure ~ profile: X448 shares are ignored, and without an X25519 one there is no group in common
+run test-tls13-dhe-shared-secret-padding.py
+    fail ^"TLS 1\.3 with (x448|secp384r1|secp521r1|ffdhe\d+)" repeat \d+$ ~ handshake_failure ~ profile
+run test-tls13-ecdhe-brainpool-curves.py
+    fail . ~ handshake_failure ~ profile: no brainpool groups
+run test-tls13-ecdhe-curves.py
+    fail ^secp256r1 - ~ Handshake(server_hello) ~ adapted: the broken secp256r1 share became a good X25519 one
+    fail ^(secp384r1|secp521r1|x448) - |^sanity - (x448|secp384r1|secp521r1)$ ~ handshake_failure ~ profile: only X25519 shares are looked at
+run test-tls13-ecdsa-support.py
+    fail ^Test with ecdsa_(brainpool|secp384r1|secp521r1) ~ handshake_failure ~ profile: our certificates are P-256
+run test-tls13-eddsa.py
+    fail ^ecdsa_secp256r1_sha256 only$ ~ Handshake(server_hello) ~ the script expects an EdDSA certificate; ours is ECDSA P-256, which this probe offers
+    fail ^ed(448|25519) only$ ~ handshake_failure ~ profile
+run test-tls13-empty-alert.py
+run test-tls13-ffdhe-groups.py
+    fail empty key share entry ~ "decode_error" ~ an empty key_exchange is shorter than its vector's minimum of 1
+    fail . ~ handshake_failure ~ profile: no FFDHE groups
+run test-tls13-ffdhe-sanity.py
+    fail . ~ handshake_failure ~ profile: no FFDHE groups
+run test-tls13-finished.py
+    fail cipher TLS_AES_256_GCM_SHA384|cipher TLS_AES_128_CCM ~ handshake_failure ~ profile: the probe offers only this suite
+run test-tls13-finished-plaintext.py
+run test-tls13-hrr.py
+run test-tls13-invalid-ciphers.py
+run test-tls13-keyshare-omitted.py
+run test-tls13-keyupdate.py --coalescing
+    fail ^app data split, conversation with KeyUpdate msg$ ~ Timeout ~ a requested KeyUpdate is answered with our next record of data, as RFC 8446 4.6.3 allows; this probe waits for it before finishing its request
+run test-tls13-keyupdate-from-server.py
+    fail ^post-handshake KeyUpdate msg from server$ ~ ApplicationData ~ shioko never starts a KeyUpdate of its own
+run test-tls13-large-number-of-extensions.py
+run test-tls13-legacy-version.py
+run test-tls13-multiple-ccs-messages.py
+    fail ^(CH and multiple CCS Messages in one TCP packet|multiple CCS Messages in one TCP packet|second CCS before client finished)$ ~ Timeout ~ every ChangeCipherSpec before the client Finished is dropped, as RFC 8446 5 says it MUST be; tlsfuzzer wants a second one refused
+run test-tls13-no-unknown-groups.py --keep-groups --groups x25519
+run test-tls13-nociphers.py
+run test-tls13-obsolete-curves.py --relaxed -a handshake_failure
+    fail ^(x448|secp384r1|secp521r1) in supported_groups and key_share$ ~ handshake_failure ~ profile
+run test-tls13-pkcs-signature.py
+run test-tls13-psk_dhe_ke.py
+    fail . ~ missing_extension ~ no psk: the PSK is ignored, and without signature_algorithms a certificate cannot be used
+run test-tls13-psk_ke.py
+    fail . ~ missing_extension ~ no psk
+run test-tls13-record-layer-limits.py
+    fail ^too big ClientHello msg, with 16168 bytes of padding$ ~ Handshake(server_hello) ~ adapted: the ClientHello is 19 bytes shorter with an X25519 share, so it no longer overflows a record
+run test-tls13-record-padding.py
+run test-tls13-rsa-signatures.py
+    fail ^tls13 signature rsa_pss_rsae_sha(384|512)$ ~ handshake_failure ~ profile: no RSA certificates
+run test-tls13-rsapss-signatures.py
+    fail ^tls13 signature rsa_pss_rsae_sha256$ ~ Handshake(server_hello) ~ adapted: rsa_pss_rsae_sha256 became ecdsa_secp256r1_sha256
+    fail ^sanity$|rsa_pss_pss ~ handshake_failure ~ profile: no RSA certificates
+run test-tls13-serverhello-random.py
+    fail ^"TLS 1\.3 with (secp|x448|ffdhe) ~ handshake_failure ~ profile
+run test-tls13-session-resumption.py
+    fail TLS 1\.2 ~ protocol_version ~ no 1.2
+    fail . ~ ApplicationData ~ no psk: no NewSessionTicket is sent
+run test-tls13-shuffled-extentions.py
+    fail ^HRR reversed order ~ Handshake(server_hello) ~ the second ClientHello is not compared with the first: RFC 8446 4.1.2 puts that duty on the client
+run test-tls13-signature-algorithms.py
+run test-tls13-symetric-ciphers.py
+    fail TLS_AES_128_CCM|TLS_AES_256_GCM ~ handshake_failure ~ profile: the probe offers only this suite
+run test-tls13-unencrypted-alert.py
+run test-tls13-unrecognised-groups.py
+    fail ffdhe2048 ~ handshake_failure ~ profile: no FFDHE groups
+run test-tls13-version-negotiation.py
+    fail ^fallback from .* to 1\.[0-2]$|in client hello legacy field$ ~ protocol_version ~ no 1.2
+run test-tls13-zero-content-type.py
+run test-tls13-zero-length-data.py
+
+skip test-tls13-certificate-request.py ~ client certificates are never asked for
+skip test-tls13-certificate-verify.py ~ client certificates are never asked for
+skip test-tls13-client-certificate-compression.py ~ client certificates are never asked for
+skip test-tls13-ecdsa-in-certificate-verify.py ~ client certificates are never asked for
+skip test-tls13-ecdsa-brainpool-in-certificate-verify.py ~ client certificates are never asked for
+skip test-tls13-eddsa-in-certificate-verify.py ~ client certificates are never asked for
+skip test-tls13-mldsa-in-certificate-verify.py ~ client certificates are never asked for
+skip test-tls13-post-handshake-auth.py ~ client certificates are never asked for
+skip test-tls13-mlkem.py ~ no ML-KEM (M6); the script also needs kyber-py
+skip test-tls13-non-support.py ~ written for servers without TLS 1.3
+skip test-tls13-lengths.py ~ expects a server that echoes what it is sent; shioko answers with HTTP
+skip test-tls13-minerva.py ~ a statistical timing study of ECDSA signing, hours long, needing tlsfuzzer's analysis tools

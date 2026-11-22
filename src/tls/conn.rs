@@ -219,6 +219,19 @@ fn alert_name(code: u8) -> String {
     name.to_string()
 }
 
+/// Test builds only: appends the ServerHello random and the shared secret
+/// to the file SHIOKO_KEYLOG names, from which tools/tlstrace.py derives
+/// every key of the connection.
+#[cfg(feature = "keylog")]
+fn keylog(random: &[u8; 32], shared: &[u8; 32]) {
+    use std::io::Write;
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let path = std::env::var_os("SHIOKO_KEYLOG").unwrap_or_default();
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+        let _ = writeln!(file, "{} {}", hex(random), hex(shared));
+    }
+}
+
 /// What reading one record came to.
 enum Read {
     /// An event for the state machine, and the application data it carried.
@@ -570,6 +583,8 @@ impl<'a, S: Stream> TlsStream<'a, S> {
                 crypto::random(&mut random).map_err(|_| internal())?;
                 let hello = msgs::server_hello(&random, &hs.session_id, &hs.public);
                 hs.transcript.add(&hello);
+                #[cfg(feature = "keylog")]
+                keylog(&random, &hs.shared);
                 hs.secrets = Some(keys::handshake_secrets(&hs.shared, &hs.transcript.hash()));
                 // The shared secret has served its purpose (section 7.1).
                 keys::wipe(&mut hs.shared);

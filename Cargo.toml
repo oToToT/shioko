@@ -14,6 +14,12 @@ libcrux-curve25519 = "=0.0.10"
 libcrux-p256 = { version = "=0.0.10", features = ["expose-hacl"] }
 libcrux-ecdsa = { version = "=0.0.10", default-features = false }
 
+[features]
+# Test builds only, for checking recorded runs (tools/tlstrace.py): every
+# handshake's shared secret is appended to the file named by SHIOKO_KEYLOG.
+# Never deploy a binary built with it.
+keylog = []
+
 # The proxy tests run it on several hundred thousand scripted connections.
 [profile.test]
 opt-level = 2

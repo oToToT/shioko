@@ -84,5 +84,13 @@ tools/check.sh         # lint, tests, release builds for both targets
 tools/spec.sh          # model-check the specs, check the RFC lists
 tools/prove.sh         # Kani proofs
 tools/interop.sh       # a real shioko against OpenSSL and curl
-tools/ci.sh            # all of the above in Linux containers
+tools/ci.sh            # all of the above in Linux containers, and tlsfuzzer
 ```
+
+`tools/ci.sh` also runs every TLS 1.3 script of tlsfuzzer against shioko
+(`ci/tlsfuzzer.Dockerfile`, `tools/tlsfuzzer.sh`). The probes expected to
+fail are listed in `tests/tlsfuzzer.txt`, each with the reason: mostly
+features shioko leaves out on purpose, such as AES, other groups, RSA
+certificates, tickets and TLS 1.2. Every connection of that run is recorded,
+decrypted by an independent decoder, and checked by TLC against the TLS
+spec as a whole behaviour (`tools/tlstrace.py`, `spec/HandshakeTrace.tla`).
