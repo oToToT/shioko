@@ -3,6 +3,9 @@ name = "shioko"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
+description = "A small TLS 1.3 reverse proxy for sites behind one local HTTP upstream each"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/oToToT/Shioko"
 publish = false
 
 # The only third-party code: libcrux (formally verified crypto), vendored in
@@ -13,7 +16,7 @@ libcrux-chacha20poly1305 = "=0.0.11"
 libcrux-curve25519 = "=0.0.10"
 libcrux-p256 = { version = "=0.0.10", features = ["expose-hacl"] }
 libcrux-ecdsa = { version = "=0.0.10", default-features = false }
-# ML-KEM-768 for the X25519MLKEM768 hybrid (M6): the portable code only, no
+# ML-KEM-768 for the X25519MLKEM768 hybrid: the portable code only, no
 # SIMD, no rand.
 libcrux-ml-kem = { version = "=0.0.12", default-features = false, features = ["mlkem768"] }
 
