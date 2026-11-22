@@ -241,7 +241,7 @@ for module in ${ONLY:-Handshake Http Server}; do
     esac
 done
 if [ -z "${ONLY:-}" ] || [ "$ONLY" = requirements ]; then
-    for name in rfc8446 rfc9110 rfc9112; do
+    for name in rfc8446 rfc9110 rfc9112 rfc10024; do
         check_requirements "$name"
     done
 fi

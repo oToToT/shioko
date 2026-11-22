@@ -134,6 +134,42 @@ pub fn x25519(secret: &[u8; 32], peer_public: &[u8; 32]) -> Result<[u8; 32], Err
     Ok(shared)
 }
 
+// --------------------------------------------------------------- ML-KEM-768
+
+/// The sizes of an ML-KEM-768 encapsulation key and ciphertext (FIPS 203).
+pub const MLKEM768_KEY_LEN: usize = 1184;
+pub const MLKEM768_CIPHERTEXT_LEN: usize = 1088;
+
+/// Encapsulates to a client's ML-KEM-768 encapsulation key: the ciphertext
+/// and the shared secret. Fails if the key does not pass the check of FIPS
+/// 203 section 7.2. Only libcrux's portable code is used.
+pub fn mlkem768_encapsulate(
+    key: &[u8; MLKEM768_KEY_LEN],
+    randomness: [u8; 32],
+) -> Result<([u8; MLKEM768_CIPHERTEXT_LEN], [u8; 32]), Error> {
+    use libcrux_ml_kem::mlkem768::{MlKem768PublicKey, portable};
+    let key = MlKem768PublicKey::from(*key);
+    if !portable::validate_public_key(&key) {
+        return Err(Error);
+    }
+    let (ciphertext, shared) = portable::encapsulate(&key, randomness);
+    Ok((*ciphertext.as_slice(), shared))
+}
+
+/// For the test client: a key pair from a 64-byte seed, and decapsulation.
+#[cfg(test)]
+pub fn mlkem768_key_pair(seed: [u8; 64]) -> ([u8; MLKEM768_KEY_LEN], Vec<u8>) {
+    let pair = libcrux_ml_kem::mlkem768::portable::generate_key_pair(seed);
+    (*pair.public_key().as_slice(), pair.private_key().as_slice().to_vec())
+}
+
+#[cfg(test)]
+pub fn mlkem768_decapsulate(private: &[u8], ciphertext: &[u8; MLKEM768_CIPHERTEXT_LEN]) -> [u8; 32] {
+    use libcrux_ml_kem::mlkem768::{MlKem768Ciphertext, MlKem768PrivateKey, portable};
+    let private = MlKem768PrivateKey::from(<[u8; 2400]>::try_from(private).unwrap());
+    portable::decapsulate(&private, &MlKem768Ciphertext::from(*ciphertext))
+}
+
 // ------------------------------------------------- ECDSA P-256 with SHA-256
 
 pub struct SigningKey(libcrux_ecdsa::p256::PrivateKey);
@@ -593,6 +629,55 @@ mod tests {
                 }
                 Err(Error) => assert!(zero, "{id}"),
             }
+        }
+    }
+
+    /// Every key of the right length is encapsulated to exactly as the
+    /// vector says, or refused by the check of FIPS 203 section 7.2 where
+    /// the vector says it is invalid (a coefficient out of range, say).
+    #[test]
+    fn wycheproof_mlkem768_encapsulation() {
+        let tests = vectors("mlkem768_encaps.txt");
+        assert_eq!(tests.len(), 265);
+        let mut refused = 0;
+        for (id, valid, f) in tests {
+            let Ok(key) = <[u8; MLKEM768_KEY_LEN]>::try_from(f["ek"].as_slice()) else {
+                assert!(!valid, "{id}: only invalid vectors have keys of another length");
+                continue;
+            };
+            let randomness: [u8; 32] = f["m"].as_slice().try_into().unwrap();
+            match mlkem768_encapsulate(&key, randomness) {
+                Ok((ciphertext, shared)) => {
+                    assert!(valid, "{id}");
+                    assert_eq!((ciphertext.to_vec(), shared.to_vec()), (f["c"].clone(), f["K"].clone()), "{id}");
+                }
+                Err(Error) => {
+                    assert!(!valid, "{id}");
+                    refused += 1;
+                }
+            }
+        }
+        assert_eq!(refused, 112);
+    }
+
+    /// The test client's side: key pairs from seeds, and decapsulation.
+    #[test]
+    fn wycheproof_mlkem768_key_pairs_and_decapsulation() {
+        let tests = vectors("mlkem768.txt");
+        assert_eq!(tests.len(), 201);
+        for (id, valid, f) in tests {
+            let (Ok(seed), Ok(ciphertext)) =
+                (<[u8; 64]>::try_from(f["seed"].as_slice()), <[u8; MLKEM768_CIPHERTEXT_LEN]>::try_from(f["c"].as_slice()))
+            else {
+                assert!(!valid, "{id}: only invalid vectors have a seed or a ciphertext of another length");
+                continue;
+            };
+            assert!(valid, "{id}");
+            let (public, private) = mlkem768_key_pair(seed);
+            if let Some(expected) = f.get("ek") {
+                assert_eq!(&public.to_vec(), expected, "{id}");
+            }
+            assert_eq!(mlkem768_decapsulate(&private, &ciphertext).to_vec(), f["K"], "{id}");
         }
     }
 }

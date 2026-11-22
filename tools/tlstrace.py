@@ -195,8 +195,8 @@ def vectors(data, at, width):
 
 
 def hello_facts(message):
-    """(offers early data, has an X25519 share) of a ClientHello, or None if
-    it does not parse."""
+    """(offers early data, has a share we can use: X25519 or
+    X25519MLKEM768) of a ClientHello, or None if it does not parse."""
     try:
         body = message[4:]
         at = 2 + 32
@@ -217,7 +217,7 @@ def hello_facts(message):
                 while j < len(shares):
                     group = int.from_bytes(shares[j:j + 2], "big")
                     key, j = vectors(shares, j + 2, 2)
-                    share |= group == 0x1d and len(key) == 32
+                    share |= (group, len(key)) in ((0x1d, 32), (0x11ec, 1216))
         return early, share
     except (ValueError, IndexError):
         return None

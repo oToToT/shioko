@@ -60,6 +60,17 @@ pub struct Client {
     pub sizes: Vec<usize>,
     /// Handshake bytes of a message not yet complete.
     partial: Vec<u8>,
+    /// The ML-KEM decapsulation key, if we offered X25519MLKEM768.
+    pub kem_private: Option<Vec<u8>>,
+    /// The group the ServerHello chose.
+    pub group: u16,
+}
+
+/// An X25519MLKEM768 share (ML-KEM encapsulation key, then our X25519
+/// share) and the decapsulation key that goes with it.
+pub fn hybrid_share() -> (Vec<u8>, Vec<u8>) {
+    let (public, private) = crypto::mlkem768_key_pair([7; 64]);
+    ([&public[..], &share()].concat(), private)
 }
 
 /// The client's X25519 secret in every test.
@@ -87,6 +98,8 @@ impl Client {
             last_header: [0; 5],
             sizes: Vec::new(),
             partial: Vec::new(),
+            kem_private: None,
+            group: 0,
         }
     }
 
@@ -193,9 +206,17 @@ impl Client {
     /// Takes a ServerHello: keys for the rest of the handshake.
     pub fn take_server_hello(&mut self, hello: &[u8]) {
         self.transcript.add(hello);
-        // The key share is the last extension we send: its last 32 bytes.
-        let public: [u8; 32] = hello[hello.len() - 32..].try_into().unwrap();
-        let shared = crypto::x25519(&self.secret, &public).unwrap();
+        let (group, theirs) = key_share(hello);
+        self.group = group;
+        let x25519 = |public: &[u8]| crypto::x25519(&self.secret, public.try_into().unwrap()).unwrap();
+        let shared = if group == msgs::X25519MLKEM768 {
+            let (ciphertext, public) = theirs.split_at(crypto::MLKEM768_CIPHERTEXT_LEN);
+            let private = self.kem_private.as_ref().expect("we offered no X25519MLKEM768");
+            [crypto::mlkem768_decapsulate(private, ciphertext.try_into().unwrap()), x25519(public)].concat()
+        } else {
+            assert_eq!(group, msgs::X25519);
+            x25519(&theirs).to_vec()
+        };
         let secrets = keys::handshake_secrets(&shared, &self.transcript.hash());
         self.read = Some(Keys::new(secrets.server));
         self.write = None;
@@ -291,4 +312,22 @@ impl Client {
         client.finish(true);
         client
     }
+}
+
+/// The group and the key share of a ServerHello.
+pub fn key_share(hello: &[u8]) -> (u16, Vec<u8>) {
+    let mut r = Reader::new(&hello[4 + 2 + 32..]);
+    r.vec8().unwrap();
+    r.u16().unwrap();
+    r.u8().unwrap();
+    let mut extensions = r.vec16().unwrap();
+    while !extensions.is_empty() {
+        let kind = extensions.u16().unwrap();
+        let mut data = extensions.vec16().unwrap();
+        if kind == 51 {
+            let group = data.u16().unwrap();
+            return (group, data.vec16().unwrap().rest().to_vec());
+        }
+    }
+    panic!("a ServerHello without a key share");
 }

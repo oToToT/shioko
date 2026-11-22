@@ -13,6 +13,9 @@ libcrux-chacha20poly1305 = "=0.0.11"
 libcrux-curve25519 = "=0.0.10"
 libcrux-p256 = { version = "=0.0.10", features = ["expose-hacl"] }
 libcrux-ecdsa = { version = "=0.0.10", default-features = false }
+# ML-KEM-768 for the X25519MLKEM768 hybrid (M6): the portable code only, no
+# SIMD, no rand.
+libcrux-ml-kem = { version = "=0.0.12", default-features = false, features = ["mlkem768"] }
 
 [features]
 # Test builds only, for checking recorded runs (tools/tlstrace.py): every
@@ -23,6 +26,11 @@ keylog = []
 # spec/Server.tla (tools/servertrace.py): the steps of the server's threads
 # and slots go to the file named by SHIOKO_RECORD. Never deploy it.
 record = []
+
+# libcrux's CPU-feature detection needs libc; shioko uses only the portable
+# code, so its own stand-in, which detects nothing, takes its place.
+[patch.crates-io]
+libcrux-platform = { path = "patches/libcrux-platform" }
 
 # The proxy tests run it on several hundred thousand scripted connections.
 [profile.test]

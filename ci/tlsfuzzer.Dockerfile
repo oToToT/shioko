@@ -12,8 +12,9 @@ RUN --network=none cargo build --locked --release --features keylog
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates git openjdk-21-jre-headless python3 python3-cryptography \
-        python3-ecdsa \
-    && rm -rf /var/lib/apt/lists/*
+        python3-ecdsa python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --break-system-packages kyber-py==1.2.0
 ADD --checksum=sha256:936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88 \
     https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
     /opt/tla2tools.jar

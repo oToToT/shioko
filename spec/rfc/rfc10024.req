@@ -1,0 +1,32 @@
+# Every sentence of RFC 10024 (rfc10024.txt, next to this file) that holds
+# MUST, SHALL, REQUIRED, SHOULD or RECOMMENDED, and how shioko accounts for
+# it. shioko implements X25519MLKEM768 only, as a server.
+#
+#   @ <section>
+#   > <the sentence>
+#   = <status>      one or more; the kinds are described in tools/spec.sh,
+#                   which also checks this file
+
+@ 3
+> The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in BCP 14 [RFC2119] [RFC8174] when, and only when, they appear in all capitals, as shown here.
+= info defines the requirement keywords used in the document
+
+@ 4.2
+> For all groups, the server MUST perform the encapsulation key check described in Section 7.2 of [NIST-FIPS-203] on the client's encapsulation key and abort with an illegal_parameter alert if it fails.
+= code refuse an X25519MLKEM768 share whose ML-KEM encapsulation key fails libcrux's validate_public_key (the type and modulus checks of FIPS 203 section 7.2) with illegal_parameter, before encapsulating
+= test wycheproof_mlkem768_encapsulation
+= test x25519mlkem768_shares_that_are_refused
+> For all groups, the client MUST check if the ciphertext length matches the selected group and abort with an illegal_parameter alert if it fails.
+= peer client: our ciphertext is always the 1088 bytes of ML-KEM-768, followed by our 32-byte X25519 share
+= test x25519mlkem768_is_chosen_when_offered
+> If ML-KEM decapsulation fails for any other reason, the connection MUST be aborted with an internal_error alert.
+= peer client: shioko only encapsulates, which cannot fail once the key has passed the check
+> For all groups, both client and server MUST process the ECDHE part as described in Section 4.3.8.2 of [RFC9846], including all validity checks, and abort with an illegal_parameter alert if it fails.
+= code refuse with illegal_parameter an X25519MLKEM768 share that is not exactly 1216 bytes (1184 of ML-KEM key, 32 of X25519), and any X25519 share that is not 32 bytes
+= test x25519mlkem768_shares_that_are_refused
+
+@ 4.3
+> For all groups, both client and server MUST calculate the ECDHE part of the shared secret as described in Section 7.4.2 of [RFC9846], including the all-zero shared secret check for X25519, and abort the connection with an illegal_parameter alert if it fails.
+= code refuse with illegal_parameter an X25519 part, alone or in X25519MLKEM768, whose shared secret is all zero; the shared secret is the ML-KEM secret followed by the X25519 one
+= test x25519mlkem768_shares_that_are_refused
+= test an_all_zero_share_is_illegal

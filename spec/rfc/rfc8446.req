@@ -12,7 +12,7 @@
 
 @ 2
 > If (EC)DHE key establishment is in use, then the ServerHello contains a "key_share" extension with the server's ephemeral Diffie-Hellman share; the server's share MUST be in the same group as one of the client's shares.
-= code put exactly one KeyShareEntry in ServerHello, group x25519 (0x001D), and only in answer to a ClientHello that carried an x25519 share
+= code put exactly one KeyShareEntry in ServerHello, of the group of the client share it answers: X25519MLKEM768 (0x11EC) if the client sent one, else x25519 (0x001D)
 = test our_hellos_field_by_field
 = test a_hello_retry_request_and_then_the_handshake
 = row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
@@ -26,7 +26,7 @@
 > If no common cryptographic parameters can be negotiated, the server MUST abort the handshake with an appropriate alert.
 = row step start whole even strict invalid:handshake_failure => closed whole even strict alert:handshake_failure
 = row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
-= code answer a ClientHello without 0x0304 with protocol_version, and one that lacks TLS_CHACHA20_POLY1305_SHA256, x25519 in supported_groups or ecdsa_secp256r1_sha256 with handshake_failure
+= code answer a ClientHello without 0x0304 with protocol_version, and one that lacks TLS_CHACHA20_POLY1305_SHA256, both x25519 and X25519MLKEM768 in supported_groups, or ecdsa_secp256r1_sha256 with handshake_failure
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
 = test bug_repeated_extension_hid_the_version
@@ -60,19 +60,20 @@
 @ 4.1.1
 > If there is no overlap between the received "supported_groups" and the groups supported by the server, then the server MUST abort the handshake with a "handshake_failure" or an "insufficient_security" alert.
 = row step start whole even strict invalid:handshake_failure => closed whole even strict alert:handshake_failure
-= code reject a ClientHello whose supported_groups does not list x25519 with handshake_failure
+= code reject a ClientHello whose supported_groups lists neither x25519 nor X25519MLKEM768 with handshake_failure
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
 > If the server selects a PSK, then it MUST also select a key establishment mode from the set indicated by the client's "psk_key_exchange_modes" extension (at present, PSK alone or with (EC)DHE).
 = unused PSK: shioko never selects a PSK; offered PSKs are ignored and a full handshake follows (PLAN 5)
 > If the server selects an (EC)DHE group and the client did not offer a compatible "key_share" extension in the initial ClientHello, the server MUST respond with a HelloRetryRequest (Section 4.1.4) message.
 = row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
-= code treat a ClientHello that lists x25519 in supported_groups and has a key_share extension without an x25519 entry as hello_retry, and answer with a HelloRetryRequest whose selected_group is x25519
+= code treat a ClientHello whose key_share extension has no entry for x25519 or X25519MLKEM768 as hello_retry, and answer with a HelloRetryRequest whose selected_group is x25519 if listed, else X25519MLKEM768
+= test a_hello_retry_request_asks_for_what_is_offered
 = test a_hello_retry_request_and_then_the_handshake
 = test what_a_client_hello_may_offer
 > If the server is unable to negotiate a supported set of parameters (i.e., there is no overlap between the client and server parameters), it MUST abort the handshake with either a "handshake_failure" or "insufficient_security" fatal alert (see Section 6).
 = row step start whole even strict invalid:handshake_failure => closed whole even strict alert:handshake_failure
-= code abort with handshake_failure when the ClientHello offers TLS 1.3 but not TLS_CHACHA20_POLY1305_SHA256, x25519 or ecdsa_secp256r1_sha256
+= code abort with handshake_failure when the ClientHello offers TLS 1.3 but not TLS_CHACHA20_POLY1305_SHA256, x25519 or X25519MLKEM768, or ecdsa_secp256r1_sha256
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
 
@@ -83,7 +84,7 @@
 = row step start whole even strict plain:finished => closed whole even strict alert:unexpected_message
 = row step start whole even strict plain:data => closed whole even strict alert:unexpected_message
 > In that case, the client MUST send the same ClientHello without modification, except as follows:
-= peer client: the second ClientHello is parsed and judged afresh; one that still lacks the x25519 share or offers early data again is refused with illegal_parameter
+= peer client: the second ClientHello is parsed and judged afresh; one that lacks a share of the group asked for, or offers early data again, is refused with illegal_parameter
 = code refuse with illegal_parameter a second ClientHello that differs from the first in anything but key_share, early_data, pre_shared_key and padding: legacy_version, random, session id, suites, compression, and every other extension in order
 = test bug_a_changed_second_client_hello_was_served
 = row step retry whole even strict plain:hello_retry => closed whole even strict alert:illegal_parameter
@@ -189,7 +190,7 @@
 = code put supported_versions with selected_version 0x0304 in the HelloRetryRequest
 = test our_hellos_field_by_field
 > Additionally, it SHOULD contain the minimal set of extensions necessary for the client to generate a correct ClientHello pair.
-= code put exactly two extensions in the HelloRetryRequest: supported_versions and key_share with selected_group x25519
+= code put exactly two extensions in the HelloRetryRequest: supported_versions and key_share with selected_group x25519 or X25519MLKEM768
 = test our_hellos_field_by_field
 > As with the ServerHello, a HelloRetryRequest MUST NOT contain any extensions that were not first offered by the client in its ClientHello, with the exception of optionally the "cookie" (see Section 4.2.2) extension.
 = code send a HelloRetryRequest only to a ClientHello that itself carries supported_versions and a key_share extension, and put nothing but supported_versions and key_share in it; a ClientHello without key_share gets missing_extension, and no cookie is ever sent (PLAN 5)
@@ -199,7 +200,7 @@
 > Upon receipt of a HelloRetryRequest, the client MUST check the legacy_version, legacy_session_id_echo, cipher_suite, and legacy_compression_method as specified in Section 4.1.3 and then process the extensions, starting with determining the version using "supported_versions".
 = peer client: nothing to do
 > Clients MUST abort the handshake with an "illegal_parameter" alert if the HelloRetryRequest would not result in any change in the ClientHello.
-= peer client: nothing to do; shioko asks for a retry only when the ClientHello has no x25519 share, so the request always changes it
+= peer client: nothing to do; shioko asks for a retry only when the ClientHello has no share of the group it asks for, so the request always changes it
 > If a client receives a second HelloRetryRequest in the same connection (i.e., where the ClientHello was itself in response to a HelloRetryRequest), it MUST abort the handshake with an "unexpected_message" alert.
 = peer client: nothing to do; shioko never sends a second HelloRetryRequest
 = check Handshake.AtMostOnce
@@ -370,7 +371,7 @@
 > Clients MUST NOT act upon any information found in "supported_groups" prior to successful completion of the handshake but MAY use the information learned from a successfully completed handshake to change what groups they use in their "key_share" extension in subsequent connections.
 = peer client: nothing to do
 > If the server has a group it prefers to the ones in the "key_share" extension but is still willing to accept the ClientHello, it SHOULD send "supported_groups" to update the client's view of its preferences; this extension SHOULD contain all groups the server supports, regardless of whether they are currently supported by the client.
-= unused supported_groups sent by the server: with x25519 as its only group the server never prefers a group other than the share it accepts; the extension is not sent
+= unused supported_groups sent by the server: the server always takes the share it prefers of those the client sent (X25519MLKEM768, then x25519) and has no other group to suggest; the extension is not sent
 
 @ 4.2.8
 > Each KeyShareEntry value MUST correspond to a group offered in the "supported_groups" extension and MUST appear in the same order.
@@ -380,17 +381,19 @@
 > Clients MUST NOT offer multiple KeyShareEntry values for the same group.
 = peer client: the design does not say which of two x25519 entries is used or whether the hello is refused; the RFC leaves the check to the server (illegal_parameter if made)
 > Clients MUST NOT offer any KeyShareEntry values for groups not listed in the client's "supported_groups" extension.
-= peer client: a ClientHello that lacks X25519 is refused with handshake_failure (PLAN 5); the design does not say separately what a share for a group missing from supported_groups does; the RFC leaves that check to the server (illegal_parameter if made)
+= peer client: a ClientHello that lacks both of our groups is refused with handshake_failure (PLAN 5), and a share for a group missing from supported_groups with illegal_parameter
 > Upon receipt of this extension in a HelloRetryRequest, the client MUST verify that (1) the selected_group field corresponds to a group which was provided in the "supported_groups" extension in the original ClientHello and (2) the selected_group field does not correspond to a group which was provided in the "key_share" extension in the original ClientHello.
-= peer client: nothing to do; shioko asks for a retry only when x25519 is listed and has no share (PLAN 5)
+= peer client: nothing to do; shioko asks for a retry only for a group that is listed and has no share (PLAN 5)
 > If either of these checks fails, then the client MUST abort the handshake with an "illegal_parameter" alert.
 = peer client: nothing to do
 > Otherwise, when sending the new ClientHello, the client MUST replace the original "key_share" extension with one containing only a new KeyShareEntry for the group indicated in the selected_group field of the triggering HelloRetryRequest.
-= peer client: a second ClientHello still without an x25519 share is refused with illegal_parameter; extra shares beside the x25519 one are not said to be checked
+= peer client: a second ClientHello without exactly one share, of the group asked for, is refused with illegal_parameter
+= test x25519mlkem768_shares_that_are_refused
 = row step retry whole even strict plain:hello_retry => closed whole even strict alert:illegal_parameter
 = row step retry whole even strict plain:hello_retry_early => closed whole even strict alert:illegal_parameter
 > This value MUST be in the same group as the KeyShareEntry value offered by the client that the server has selected for the negotiated key exchange.
-= code put one KeyShareEntry in ServerHello: group 0x001D with a 32-byte X25519 public value, answering the client's x25519 entry
+= code put one KeyShareEntry in ServerHello answering the client's entry: 0x11EC with an ML-KEM-768 ciphertext and our X25519 share (1120 bytes), or 0x001D with our 32-byte X25519 share
+= test x25519mlkem768_is_chosen_when_offered
 = test our_hellos_field_by_field
 = test a_whole_handshake_and_data_both_ways
 > Servers MUST NOT send a KeyShareEntry for any group not indicated in the client's "supported_groups" extension and MUST NOT send a KeyShareEntry when using the "psk_ke" PskKeyExchangeMode.
@@ -408,7 +411,7 @@
 
 @ 4.2.8.2
 > For the curves secp256r1, secp384r1, and secp521r1, peers MUST validate each other's public value Q by ensuring that the point is a valid point on the elliptic curve.
-= unused key exchange on secp256r1, secp384r1 and secp521r1: only x25519 is supported; shares for these groups are skipped unread
+= unused key exchange on secp256r1, secp384r1 and secp521r1: only x25519 and X25519MLKEM768 are supported; shares for other groups are skipped unread
 
 @ 4.2.9
 > In order to use PSKs, clients MUST also send a "psk_key_exchange_modes" extension.
@@ -427,9 +430,9 @@
 > The server MUST NOT send a "psk_key_exchange_modes" extension.
 = unused PSK: psk_key_exchange_modes is never emitted in any server message
 > In this mode, the server MUST NOT supply a "key_share" value.
-= unused PSK: psk_ke is never selected; every ServerHello carries an x25519 key_share
+= unused PSK: psk_ke is never selected; every ServerHello carries a key_share
 > In this mode, the client and server MUST supply "key_share" values as described in Section 4.2.8.
-= unused PSK: psk_dhe_ke is never selected; every ServerHello carries an x25519 key_share
+= unused PSK: psk_dhe_ke is never selected; every ServerHello carries a key_share
 
 @ 4.2.10
 > If the client opts to do so, it MUST supply both the "pre_shared_key" and "early_data" extensions.
@@ -1140,7 +1143,7 @@
 > A TLS-compliant application MUST support digital signatures with rsa_pkcs1_sha256 (for certificates), rsa_pss_rsae_sha256 (for CertificateVerify and certificates), and ecdsa_secp256r1_sha256.
 = deviation RSA signatures are not implemented; only ecdsa_secp256r1_sha256 is, and a site needs an ECDSA P-256 certificate (PLAN 5, known departures)
 > A TLS-compliant application MUST support key exchange with secp256r1 (NIST P-256) and SHOULD support key exchange with X25519 [RFC7748].
-= deviation PLAN section 5, known departures: key exchange over secp256r1 is not implemented; the one group is X25519 (the SHOULD half), and section 11 accepts that a client offering only secp256r1 cannot connect
+= deviation PLAN section 5, known departures: key exchange over secp256r1 is not implemented; the groups are X25519 (the SHOULD half) and X25519MLKEM768, and section 11 accepts that a client offering only secp256r1 cannot connect
 
 @ 9.2
 > In the absence of an application profile standard specifying otherwise, a TLS-compliant application MUST implement the following TLS extensions:
@@ -1174,7 +1177,7 @@
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
 = test what_our_first_records_look_like
-= code send key_share in ServerHello (our X25519 share) and in HelloRetryRequest (selected group x25519 only)
+= code send key_share in ServerHello (our share) and in HelloRetryRequest (the selected group)
 = test our_hellos_field_by_field
 = test a_hello_retry_request_and_then_the_handshake
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
@@ -1215,7 +1218,7 @@
 > For this to work, implementations MUST correctly handle extensible fields:
 = info introduces the list below, each item with its own entry
 > - A client sending a ClientHello MUST support all parameters advertised in it.
-= peer client: nothing to do; shioko selects only TLS 1.3, TLS_CHACHA20_POLY1305_SHA256, x25519 and ecdsa_secp256r1_sha256, and only when the client listed them
+= peer client: nothing to do; shioko selects only TLS 1.3, TLS_CHACHA20_POLY1305_SHA256, X25519MLKEM768 or x25519, and ecdsa_secp256r1_sha256, and only when the client listed them
 > - A server receiving a ClientHello MUST correctly ignore all unrecognized cipher suites, extensions, and other parameters.
 = code skip unknown cipher suites, extensions, named groups, key_share entries, versions, signature schemes and PSK modes in a ClientHello without error; only the absence of a required value fails the handshake
 = test unknown_values_are_ignored
@@ -1259,7 +1262,7 @@
 
 @ C.1
 > It is RECOMMENDED to use an existing CSPRNG implementation in preference to crafting a new one.
-= code take every random value (ServerHello.random, X25519 private key, ECDSA nonce) from /dev/urandom with no generator of our own, and fail the handshake when the read fails (PLAN sections 4 and 5)
+= code take every random value (ServerHello.random, X25519 private key, ML-KEM encapsulation randomness, ECDSA nonce) from /dev/urandom with no generator of our own, and fail the handshake when the read fails (PLAN sections 4 and 5)
 = test random_fills_buffer
 = test ecdsa_sign_verifies_and_is_randomised
 = test every_server_random_is_new

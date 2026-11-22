@@ -15,7 +15,11 @@ pub const KEY_UPDATE: u8 = 24;
 
 const TLS13: u16 = 0x0304;
 const CHACHA20_POLY1305_SHA256: u16 = 0x1303;
-const X25519: u16 = 0x001d;
+pub const X25519: u16 = 0x001d;
+/// ML-KEM-768 and X25519 together (RFC 10024). A client's share is its
+/// ML-KEM encapsulation key and then its X25519 share.
+pub const X25519MLKEM768: u16 = 0x11ec;
+pub const X25519MLKEM768_SHARE_LEN: usize = crate::crypto::MLKEM768_KEY_LEN + 32;
 const ECDSA_P256_SHA256: u16 = 0x0403;
 const HTTP11: &[u8] = b"http/1.1";
 
@@ -49,8 +53,12 @@ pub struct ClientHello<'a> {
     pub session_id: &'a [u8],
     /// The host name of server_name.
     pub server_name: &'a [u8],
-    /// The X25519 key share, if the client sent one.
-    pub share: Option<[u8; 32]>,
+    /// The key share we use, if the client sent one we can: its group and
+    /// its key. X25519MLKEM768 comes before X25519.
+    pub share: Option<(u16, &'a [u8])>,
+    /// The group to ask for otherwise: X25519 if offered, or else
+    /// X25519MLKEM768.
+    pub retry_group: u16,
     /// How many key shares the client sent.
     pub shares: usize,
     /// The client offers early data.
@@ -196,19 +204,27 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
     };
 
     // 5. What we can do.
-    if !suites.contains(&CHACHA20_POLY1305_SHA256) || !signatures.contains(&ECDSA_P256_SHA256) || !groups.contains(&X25519) {
+    let ours = groups.contains(&X25519) || groups.contains(&X25519MLKEM768);
+    if !suites.contains(&CHACHA20_POLY1305_SHA256) || !signatures.contains(&ECDSA_P256_SHA256) || !ours {
         return Err(Alert::HandshakeFailure);
     }
+    let retry_group = if groups.contains(&X25519) { X25519 } else { X25519MLKEM768 };
 
-    // 6. The key shares: one per group at most, only for offered groups.
+    // 6. The key shares: one per group at most, only for offered groups,
+    // ours of the length their group gives them.
     let mut share = None;
-    for (index, (group, key)) in shares.iter().enumerate() {
-        let again = shares.iter().take(index).any(|(g, _)| g == group);
-        if again || !groups.contains(group) {
+    for (index, &(group, key)) in shares.iter().enumerate() {
+        let again = shares.iter().take(index).any(|(g, _)| *g == group);
+        let length = match group {
+            X25519 => Some(32),
+            X25519MLKEM768 => Some(X25519MLKEM768_SHARE_LEN),
+            _ => None,
+        };
+        if again || !groups.contains(&group) || length.is_some_and(|n| key.len() != n) {
             return Err(Alert::IllegalParameter);
         }
-        if *group == X25519 {
-            share = Some(<[u8; 32]>::try_from(*key).map_err(|_| Alert::IllegalParameter)?);
+        if group == X25519MLKEM768 || (group == X25519 && share.is_none()) {
+            share = Some((group, key));
         }
     }
 
@@ -230,7 +246,7 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
         keep(&kind.to_be_bytes());
         keep(data.rest());
     }
-    Ok(ClientHello { session_id, server_name, share, shares: shares.len(), early, alpn: alpn.is_some(), kept })
+    Ok(ClientHello { session_id, server_name, share, retry_group, shares: shares.len(), early, alpn: alpn.is_some(), kept })
 }
 
 /// A handshake message: its type, its length, its body.
@@ -250,12 +266,12 @@ fn hello(random: &[u8; 32], session_id: &[u8], key_share: impl FnOnce(&mut Write
     })
 }
 
-pub fn server_hello(random: &[u8; 32], session_id: &[u8], public: &[u8; 32]) -> Vec<u8> {
-    hello(random, session_id, |w| w.u16(X25519).vec(2, |w| w.raw(public)))
+pub fn server_hello(random: &[u8; 32], session_id: &[u8], group: u16, share: &[u8]) -> Vec<u8> {
+    hello(random, session_id, |w| w.u16(group).vec(2, |w| w.raw(share)))
 }
 
-pub fn hello_retry_request(session_id: &[u8]) -> Vec<u8> {
-    hello(&RETRY_RANDOM, session_id, |w| w.u16(X25519))
+pub fn hello_retry_request(session_id: &[u8], group: u16) -> Vec<u8> {
+    hello(&RETRY_RANDOM, session_id, |w| w.u16(group))
 }
 
 /// EncryptedExtensions: an empty server_name to say we used it, and the
@@ -343,7 +359,7 @@ pub mod tests {
         values.iter().flat_map(|v| v.to_be_bytes()).collect()
     }
 
-    fn vec16(data: &[u8]) -> Vec<u8> {
+    pub fn vec16(data: &[u8]) -> Vec<u8> {
         let mut out = u16::try_from(data.len()).unwrap().to_be_bytes().to_vec();
         out.extend_from_slice(data);
         out
@@ -428,7 +444,7 @@ pub mod tests {
     fn a_modern_client_hello() {
         let parsed = check(&Hello::new("site.test", &SHARE)).unwrap();
         assert_eq!(parsed.server_name, b"site.test");
-        assert_eq!(parsed.share, Some(SHARE));
+        assert_eq!(parsed.share, Some((X25519, &SHARE[..])));
         assert_eq!((parsed.shares, parsed.early, parsed.alpn), (1, false, true));
         assert_eq!(parsed.session_id, [0xab; 32]);
     }
@@ -637,7 +653,7 @@ pub mod tests {
     fn our_hellos_field_by_field() {
         for session_id in [&[][..], &[9][..], &[9; 32][..]] {
             for retry in [false, true] {
-                let bytes = if retry { hello_retry_request(session_id) } else { server_hello(&[1; 32], session_id, &[3; 32]) };
+                let bytes = if retry { hello_retry_request(session_id, X25519) } else { server_hello(&[1; 32], session_id, X25519, &[3; 32]) };
                 let mut r = Reader::new(&bytes);
                 assert_eq!(r.u8(), Some(SERVER_HELLO));
                 let mut body = r.vec24().unwrap();
@@ -669,10 +685,10 @@ pub mod tests {
 
     #[test]
     fn our_messages_are_well_formed() {
-        let sh = server_hello(&[1; 32], &[2; 32], &[3; 32]);
+        let sh = server_hello(&[1; 32], &[2; 32], X25519, &[3; 32]);
         assert_eq!(&sh[..4], &[SERVER_HELLO, 0, 0, u8::try_from(sh.len() - 4).unwrap()]);
         assert_eq!(&sh[4..6], &[3, 3]);
-        let hrr = hello_retry_request(&[2; 32]);
+        let hrr = hello_retry_request(&[2; 32], X25519);
         assert_eq!(&hrr[6..38], &RETRY_RANDOM);
         assert!(hrr.ends_with(&[0, 51, 0, 2, 0, 0x1d]));
         assert_eq!(&RETRY_RANDOM, &crate::crypto::sha256(b"HelloRetryRequest"));

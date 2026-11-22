@@ -13,7 +13,8 @@ the certbot hook and the deployment guide.
 
 - Rust `std` and nothing else of ours; `unsafe` is forbidden in our code.
 - One third-party dependency family, the formally verified crypto library
-  libcrux, vendored and pinned in `vendor/`.
+  libcrux, vendored and pinned in `vendor/`, with its portable code only
+  (`patches/libcrux-platform` stands in for its CPU detection).
 - TLA+ specifications of the TLS state machine, the HTTP exchange and the
   threads (`spec/`), checked with TLC.
 - A list for each RFC of every sentence that states a requirement, and what
@@ -53,10 +54,12 @@ it departs from in `spec/rfc/`.
 
 **TLS (RFC 8446)**
 
-- **Only one cipher suite, one key exchange group, one signature scheme.**
+- **Only one cipher suite, two key exchange groups, one signature scheme.**
   RFC 8446 section 9.1 makes `TLS_AES_128_GCM_SHA256`, key exchange over
   secp256r1 and RSA signatures mandatory to implement. shioko implements
-  `TLS_CHACHA20_POLY1305_SHA256`, X25519 and `ecdsa_secp256r1_sha256` only.
+  `TLS_CHACHA20_POLY1305_SHA256`, X25519MLKEM768 (the post-quantum hybrid
+  of RFC 10024, preferred when offered), X25519 and `ecdsa_secp256r1_sha256`
+  only.
   A client that offers none of these cannot connect, and every site needs an
   ECDSA P-256 certificate. Current browsers, curl, OpenSSL and Cloudflare
   all offer what shioko needs.

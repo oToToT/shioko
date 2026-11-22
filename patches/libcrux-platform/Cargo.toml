@@ -1,0 +1,9 @@
+# Ours, in place of libcrux's CPU-feature detection (see the README there).
+[package]
+name = "libcrux-platform"
+version = "0.0.4"
+edition = "2021"
+publish = false
+
+[lib]
+name = "libcrux_platform"

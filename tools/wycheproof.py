@@ -3,9 +3,9 @@
 
 Development-time tool. Usage:
 
-    tools/wycheproof.py <dir with Wycheproof testvectors_v1 JSON files>
+    tools/wycheproof.py <dir with Wycheproof testvectors_v1 JSON files> [OUTPUT...]
 
-Writes tests/vectors/*.txt. One test per line:
+Writes tests/vectors/*.txt, or only the OUTPUT files named. One test per line:
 
     <tcId> <valid|invalid> <field>=<hex> ...
 
@@ -28,6 +28,11 @@ FILES = {
         ["key", "iv", "aad", "msg", "ct", "tag"],
     ),
     "x25519.txt": ("x25519_test.json", [], ["public", "private", "shared"]),
+    # Encapsulation to a key, with the randomness m: the ciphertext c and
+    # the shared secret K; invalid where the key fails FIPS 203's check.
+    "mlkem768_encaps.txt": ("mlkem_768_encaps_test.json", [], ["ek", "m", "c", "K"]),
+    # A key pair from a seed, and decapsulation (for the test client).
+    "mlkem768.txt": ("mlkem_768_test.json", [], ["seed", "ek", "c", "K"]),
 }
 
 
@@ -38,10 +43,12 @@ def hexfield(name, value):
 
 
 def main():
-    src = sys.argv[1]
+    src, only = sys.argv[1], sys.argv[2:]
     out_dir = os.path.join(os.path.dirname(__file__), "..", "tests", "vectors")
     os.makedirs(out_dir, exist_ok=True)
     for out_name, (in_name, group_fields, test_fields) in FILES.items():
+        if only and out_name not in only:
+            continue
         with open(os.path.join(src, in_name)) as f:
             data = json.load(f)
         lines = [
@@ -53,7 +60,7 @@ def main():
             for test in group["tests"]:
                 result = "invalid" if test["result"] == "invalid" else "valid"
                 fields = ["%s=%s" % (k, hexfield(k, group[k])) for k in group_fields]
-                fields += ["%s=%s" % (k, hexfield(k, test[k])) for k in test_fields]
+                fields += ["%s=%s" % (k, hexfield(k, test[k])) for k in test_fields if k in test]
                 lines.append("%d %s %s" % (test["tcId"], result, " ".join(fields)))
         with open(os.path.join(out_dir, out_name), "w") as f:
             f.write("\n".join(lines) + "\n")

@@ -93,9 +93,11 @@ struct Handshake<'a> {
     alpn: bool,
     /// What a second ClientHello must repeat of the first.
     first_hello: Vec<u8>,
-    /// Our X25519 public key and the secret shared with the client.
-    public: [u8; 32],
-    shared: [u8; 32],
+    /// The group of the key exchange (or the one a HelloRetryRequest asks
+    /// for), our share, and the secret shared with the client.
+    group: u16,
+    public: Vec<u8>,
+    shared: Vec<u8>,
     secrets: Option<HandshakeSecrets>,
     /// The transcript hash up to our Finished, and the application secrets.
     finished_hash: [u8; HASH_LEN],
@@ -207,7 +209,7 @@ const ALERT_NAMES: [(u8, &str); 27] = [
 /// to the file SHIOKO_KEYLOG names, from which tools/tlstrace.py derives
 /// every key of the connection.
 #[cfg(feature = "keylog")]
-fn keylog(random: &[u8; 32], shared: &[u8; 32]) {
+fn keylog(random: &[u8; 32], shared: &[u8]) {
     use std::io::Write;
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let path = std::env::var_os("SHIOKO_KEYLOG").unwrap_or_default();
@@ -375,7 +377,8 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         }
         // The second ClientHello repeats the first but for what may change,
         // and brings exactly the one key share we asked for (section 4.1.2).
-        if phase == Phase::Retry && (hello.kept != hs.first_hello || hello.shares != 1) {
+        let asked = hello.share.is_some_and(|(group, _)| group == hs.group);
+        if phase == Phase::Retry && (hello.kept != hs.first_hello || hello.shares != 1 || !asked) {
             return Err(Alert::IllegalParameter);
         }
         hs.first_hello = hello.kept;
@@ -383,17 +386,41 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         hs.session_id = hello.session_id.to_vec();
         hs.alpn = hello.alpn;
         hs.transcript.add(message);
-        let Some(share) = hello.share else {
+        let Some((group, share)) = hello.share else {
+            hs.group = hello.retry_group;
             return Ok(if hello.early { Content::HelloRetryEarly } else { Content::HelloRetry });
         };
+        hs.group = group;
+        // Either share ends with the client's X25519 share; an
+        // X25519MLKEM768 one starts with its ML-KEM key (RFC 10024 4.1).
+        let (kem, theirs) = share.split_at_checked(share.len().saturating_sub(32)).ok_or(Alert::IllegalParameter)?;
+        let theirs: &[u8; 32] = theirs.try_into().map_err(|_| Alert::IllegalParameter)?;
         let mut secret = [0u8; 32];
         crypto::random(&mut secret).map_err(|_| Alert::InternalError)?;
-        hs.public = crypto::x25519_public(&secret);
+        let ours = crypto::x25519_public(&secret);
         // An all-zero result means the client's share is a small-order
-        // point (section 7.4.2).
-        let shared = crypto::x25519(&secret, &share);
+        // point (section 7.4.2, RFC 10024 4.3).
+        let shared = crypto::x25519(&secret, theirs);
         keys::wipe(&mut secret);
-        hs.shared = shared.map_err(|_| Alert::IllegalParameter)?;
+        let mut shared = shared.map_err(|_| Alert::IllegalParameter)?;
+        if group == msgs::X25519MLKEM768 {
+            // A key that fails the check of FIPS 203 section 7.2 is an
+            // illegal parameter (RFC 10024 4.2). The ML-KEM secret goes
+            // first, then the X25519 one (4.3).
+            let kem = kem.try_into().map_err(|_| Alert::IllegalParameter)?;
+            let mut randomness = [0u8; 32];
+            crypto::random(&mut randomness).map_err(|_| Alert::InternalError)?;
+            let encapsulated = crypto::mlkem768_encapsulate(kem, randomness);
+            keys::wipe(&mut randomness);
+            let (ciphertext, mut kem_shared) = encapsulated.map_err(|_| Alert::IllegalParameter)?;
+            hs.public = [&ciphertext[..], &ours].concat();
+            hs.shared = [kem_shared, shared].concat();
+            keys::wipe(&mut kem_shared);
+        } else {
+            hs.public = ours.to_vec();
+            hs.shared = shared.to_vec();
+        }
+        keys::wipe(&mut shared);
         Ok(if hello.early { Content::HelloEarly } else { Content::Hello })
     }
 
@@ -510,14 +537,14 @@ impl<'a, S: Stream> TlsStream<'a, S> {
             }
             (Action::Send(Kind::Retry), Some(hs)) => {
                 hs.transcript.restart_with_message_hash();
-                let retry = msgs::hello_retry_request(&hs.session_id);
+                let retry = msgs::hello_retry_request(&hs.session_id, hs.group);
                 hs.transcript.add(&retry);
                 self.send(w, record::HANDSHAKE, &retry)
             }
             (Action::Send(Kind::ServerHello), Some(hs)) => {
                 let mut random = [0u8; 32];
                 crypto::random(&mut random).map_err(|_| internal())?;
-                let hello = msgs::server_hello(&random, &hs.session_id, &hs.public);
+                let hello = msgs::server_hello(&random, &hs.session_id, hs.group, &hs.public);
                 hs.transcript.add(&hello);
                 #[cfg(feature = "keylog")]
                 keylog(&random, &hs.shared);

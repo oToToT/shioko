@@ -1,9 +1,9 @@
 //! The TLS server end to end, over loopback sockets, driven by the test
 //! client.
 
-use super::client::{Client, Got, SECRET, share};
+use super::client::{Client, Got, SECRET, hybrid_share, share};
 use super::conn::{Identity, Served, TlsStream};
-use super::msgs::tests::{Hello, alpn, key_shares, sni};
+use super::msgs::tests::{Hello, alpn, key_shares, sni, u16s, vec16};
 use super::{msgs, record};
 use crate::config::Config;
 use crate::crypto;
@@ -885,4 +885,87 @@ fn bug_a_changed_second_client_hello_was_served() {
         client.send_hello(&second);
         assert!(matches!(client.get_past_ccs(), Got::Handshake(m) if m[0][0] == msgs::SERVER_HELLO));
     }
+}
+
+const HYBRID: u16 = msgs::X25519MLKEM768;
+
+/// A ClientHello offering these groups, with these key shares.
+fn offering(groups: &[u16], shares: &[(u16, &[u8])]) -> Hello {
+    hello("site.test").set(10, vec16(&u16s(groups))).set(51, key_shares(shares))
+}
+
+/// Runs the handshake from the given ClientHello, through HelloRetryRequest
+/// and `second` if the server asks for it, and sends data both ways. The
+/// group the server chose.
+fn hybrid_handshake(first: &Hello, second: Option<&Hello>) -> u16 {
+    let mut client = Client::connect(server());
+    client.kem_private = Some(hybrid_share().1);
+    client.send_hello(first);
+    let Got::Handshake(messages) = client.get() else { panic!("no answer") };
+    let mut hello = messages[0].clone();
+    if hello[6..38] == crypto::sha256(b"HelloRetryRequest") {
+        assert_eq!(client.get(), Got::Ccs);
+        client.transcript.restart_with_message_hash();
+        client.transcript.add(&hello);
+        client.send_hello(second.expect("a HelloRetryRequest we did not expect"));
+        let Got::Handshake(messages) = client.get_past_ccs() else { panic!("no ServerHello") };
+        hello = messages[0].clone();
+    }
+    client.take_server_hello(&hello);
+    client.take_flight(&public("site.test"));
+    client.finish(true);
+    client.send(record::APPLICATION_DATA, b"post-quantum");
+    assert_eq!(client.get(), Got::Data(b"post-quantum".to_vec()));
+    client.group
+}
+
+/// X25519MLKEM768 (RFC 10024) is chosen whenever the client sends a share
+/// for it, as browsers do next to an X25519 one; X25519 otherwise.
+#[test]
+fn x25519mlkem768_is_chosen_when_offered() {
+    let (hybrid, _) = hybrid_share();
+    let both = offering(&[HYBRID, msgs::X25519], &[(HYBRID, &hybrid), (msgs::X25519, &share())]);
+    assert_eq!(hybrid_handshake(&both, None), HYBRID);
+    let reversed = offering(&[msgs::X25519, HYBRID], &[(msgs::X25519, &share()), (HYBRID, &hybrid)]);
+    assert_eq!(hybrid_handshake(&reversed, None), HYBRID);
+    assert_eq!(hybrid_handshake(&offering(&[HYBRID], &[(HYBRID, &hybrid)]), None), HYBRID);
+    // Offered without a share: X25519 with its share is enough.
+    assert_eq!(hybrid_handshake(&offering(&[HYBRID, msgs::X25519], &[(msgs::X25519, &share())]), None), msgs::X25519);
+}
+
+/// Without a share we can use, a HelloRetryRequest asks for X25519 if the
+/// client offers it, and for X25519MLKEM768 if that is all it offers.
+#[test]
+fn a_hello_retry_request_asks_for_what_is_offered() {
+    let (hybrid, _) = hybrid_share();
+    let only = offering(&[HYBRID], &[]);
+    assert_eq!(hybrid_handshake(&only, Some(&offering(&[HYBRID], &[(HYBRID, &hybrid)]))), HYBRID);
+    let both = offering(&[HYBRID, msgs::X25519], &[]);
+    let second = offering(&[HYBRID, msgs::X25519], &[(msgs::X25519, &share())]);
+    assert_eq!(hybrid_handshake(&both, Some(&second)), msgs::X25519);
+}
+
+/// What RFC 10024 says to refuse with illegal_parameter: a share of the
+/// wrong length, an ML-KEM key that fails the check of FIPS 203 section
+/// 7.2, an X25519 part that gives an all-zero secret; and, after a
+/// HelloRetryRequest, a share for another group than the one asked for.
+#[test]
+fn x25519mlkem768_shares_that_are_refused() {
+    let address = server();
+    let (hybrid, _) = hybrid_share();
+    let mut too_short = hybrid.clone();
+    too_short.pop();
+    // Every coefficient 4095, above the modulus 3329.
+    let mut over_modulus = hybrid.clone();
+    over_modulus[..crypto::MLKEM768_KEY_LEN - 32].fill(0xff);
+    let mut zero_x25519 = hybrid.clone();
+    zero_x25519[crypto::MLKEM768_KEY_LEN..].fill(0);
+    for (what, key) in [("one byte short", too_short), ("over the modulus", over_modulus), ("all-zero X25519", zero_x25519)] {
+        assert_eq!(alert_for(address, &offering(&[HYBRID], &[(HYBRID, &key)])), Some(47), "{what}");
+    }
+    let mut client = Client::connect(address);
+    client.send_hello(&offering(&[HYBRID, msgs::X25519], &[]));
+    assert!(matches!(client.get(), Got::Handshake(_)));
+    client.send_hello(&offering(&[HYBRID, msgs::X25519], &[(HYBRID, &hybrid)]));
+    assert_eq!(client.alert(), Some(47), "a share for X25519MLKEM768 when X25519 was asked for");
 }

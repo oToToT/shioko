@@ -49,7 +49,8 @@ impl Drop for HandshakeSecrets {
     }
 }
 
-pub fn handshake_secrets(shared: &[u8; 32], transcript: &[u8; HASH_LEN]) -> HandshakeSecrets {
+/// `shared` is 32 bytes for X25519, 64 for X25519MLKEM768 (RFC 10024 4.3).
+pub fn handshake_secrets(shared: &[u8], transcript: &[u8; HASH_LEN]) -> HandshakeSecrets {
     // Without a PSK the early secret is Extract(0, 0).
     let empty_hash = crypto::sha256(b"");
     let mut early = crypto::hkdf_extract(&[0u8; HASH_LEN], &[0u8; HASH_LEN]);
