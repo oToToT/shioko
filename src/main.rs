@@ -25,7 +25,8 @@ use std::process::ExitCode;
 use tls::conn::Identity;
 
 const DEFAULT_CONFIG: &str = "/etc/shioko/shioko.conf";
-const ACME_DIRECTORY: &str = "/var/lib/shioko/acme";
+/// Where `certbot --webroot -w /var/lib/shioko/acme` puts its tokens.
+const ACME_DIRECTORY: &str = "/var/lib/shioko/acme/.well-known/acme-challenge";
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -69,4 +70,17 @@ fn main() -> ExitCode {
     }
     server::listen(&server, &secure, true);
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    /// Bug (found by the end-to-end run, ci/e2e): tokens were read from
+    /// /var/lib/shioko/acme/<token>, but `certbot --webroot -w
+    /// /var/lib/shioko/acme` writes them under .well-known/acme-challenge/
+    /// there, so no certificate could have been renewed. The end-to-end
+    /// checks have certbot get one through shioko.
+    #[test]
+    fn bug_acme_tokens_were_not_where_certbot_writes_them() {
+        assert_eq!(super::ACME_DIRECTORY, "/var/lib/shioko/acme/.well-known/acme-challenge");
+    }
 }
