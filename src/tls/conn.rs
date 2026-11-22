@@ -91,6 +91,8 @@ struct Handshake<'a> {
     site: Option<(&'a Site, &'a Identity)>,
     session_id: Vec<u8>,
     alpn: bool,
+    /// What a second ClientHello must repeat of the first.
+    first_hello: Vec<u8>,
     /// Our X25519 public key and the secret shared with the client.
     public: [u8; 32],
     shared: [u8; 32],
@@ -367,12 +369,12 @@ impl<'a, S: Stream> TlsStream<'a, S> {
         if !found.0.allows(served.peer) {
             return Err(Alert::AccessDenied);
         }
-        // The second ClientHello is for the same site, and brings exactly
-        // the one key share we asked for (section 4.1.2).
-        let same = hs.site.is_some_and(|(site, _)| std::ptr::eq(site, found.0));
-        if phase == Phase::Retry && (!same || hello.shares != 1) {
+        // The second ClientHello repeats the first but for what may change,
+        // and brings exactly the one key share we asked for (section 4.1.2).
+        if phase == Phase::Retry && (hello.kept != hs.first_hello || hello.shares != 1) {
             return Err(Alert::IllegalParameter);
         }
+        hs.first_hello = hello.kept;
         hs.site = Some(found);
         hs.session_id = hello.session_id.to_vec();
         hs.alpn = hello.alpn;

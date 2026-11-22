@@ -839,3 +839,50 @@ fn bug_the_largest_client_hellos_were_refused() {
     let (_, got) = first_answer(address, &big);
     assert!(matches!(got, Got::Handshake(ref m) if m[0][0] == msgs::SERVER_HELLO), "{got:?}");
 }
+
+/// Bug (found by tlsfuzzer): a second ClientHello was checked only for its
+/// site and its key share, not compared with the first, so one that
+/// changed anything else (its random, its suites, the order of its
+/// extensions) was served. Section 4.1.2 allows only a new key share, no
+/// early_data, and changed pre_shared_key and padding.
+#[test]
+fn bug_a_changed_second_client_hello_was_served() {
+    let address = server();
+    let p256 = || hello("site.test").set(51, key_shares(&[(SECP256R1, &[4u8; 65])]));
+    let reversed = |mut h: Hello| {
+        h.extensions.as_mut().unwrap().reverse();
+        h
+    };
+    let changed_random = {
+        let mut bytes = hello("site.test").bytes();
+        bytes[6] ^= 1;
+        bytes
+    };
+    for (what, second) in [
+        ("extensions in another order", reversed(hello("site.test")).bytes()),
+        ("another random", changed_random),
+        ("another session id", Hello { session_id: vec![0xcd; 32], ..hello("site.test") }.bytes()),
+        ("another suite added", Hello { suites: vec![0x1303, 0x1301], ..hello("site.test") }.bytes()),
+        ("an extension added", hello("site.test").set(0x4444, vec![1]).bytes()),
+        ("an extension dropped", hello("site.test").without(16).bytes()),
+    ] {
+        let mut client = Client::connect(address);
+        client.send_hello(&p256());
+        assert!(matches!(client.get(), Got::Handshake(_)), "{what}");
+        client.send(record::HANDSHAKE, &second);
+        assert_eq!(client.alert(), Some(47), "{what}: illegal_parameter");
+    }
+    // What may change does not matter: the share, early_data dropped,
+    // padding added, changed or dropped.
+    for (first, second) in [
+        (p256().set(42, vec![]).set(21, vec![0; 10]), hello("site.test").set(21, vec![0; 3])),
+        (p256().set(21, vec![0; 10]), hello("site.test")),
+        (p256(), hello("site.test").set(21, vec![0; 7])),
+    ] {
+        let mut client = Client::connect(address);
+        client.send_hello(&first);
+        assert!(matches!(client.get(), Got::Handshake(_)));
+        client.send_hello(&second);
+        assert!(matches!(client.get_past_ccs(), Got::Handshake(m) if m[0][0] == msgs::SERVER_HELLO));
+    }
+}

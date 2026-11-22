@@ -23,6 +23,7 @@ const SERVER_NAME: u16 = 0;
 const SUPPORTED_GROUPS: u16 = 10;
 const SIGNATURE_ALGORITHMS: u16 = 13;
 const ALPN: u16 = 16;
+const PADDING: u16 = 21;
 const PRE_SHARED_KEY: u16 = 41;
 const EARLY_DATA: u16 = 42;
 const SUPPORTED_VERSIONS: u16 = 43;
@@ -56,6 +57,14 @@ pub struct ClientHello<'a> {
     pub early: bool,
     /// The client offers ALPN (and http/1.1 is among what it offers).
     pub alpn: bool,
+    /// What a second ClientHello must repeat of this one (section 4.1.2):
+    /// all of it, extensions in order, but the key shares, early_data,
+    /// pre_shared_key and padding.
+    pub kept: Vec<u8>,
+}
+
+fn u16s_bytes(values: &[u16]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_be_bytes()).collect()
 }
 
 /// A non-empty list of two-byte values that fills `list`.
@@ -103,7 +112,7 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
     let mut body = r.vec24().ok_or(decode_error)?;
     r.end().ok_or(decode_error)?;
     let legacy_version = body.u16().ok_or(decode_error)?;
-    let _random = body.bytes(32).ok_or(decode_error)?;
+    let random = body.bytes(32).ok_or(decode_error)?;
     let session_id = body.vec8().map(Reader::rest).filter(|id| id.len() <= 32).ok_or(decode_error)?;
     let suites = body.vec16().and_then(u16s).ok_or(decode_error)?;
     let compression = body.vec8().map(Reader::rest).filter(|c| !c.is_empty()).ok_or(decode_error)?;
@@ -208,7 +217,20 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
         return Err(Alert::NoApplicationProtocol);
     }
 
-    Ok(ClientHello { session_id, server_name, share, shares: shares.len(), early, alpn: alpn.is_some() })
+    // Each part with its length, so that no two ClientHellos keep the same.
+    let mut kept = Vec::new();
+    let mut keep = |part: &[u8]| {
+        kept.extend(u32::try_from(part.len()).unwrap_or(u32::MAX).to_be_bytes());
+        kept.extend(part);
+    };
+    for part in [&legacy_version.to_be_bytes()[..], random, session_id, &u16s_bytes(&suites), compression] {
+        keep(part);
+    }
+    for (kind, data) in found.iter().filter(|(k, _)| ![KEY_SHARE, EARLY_DATA, PRE_SHARED_KEY, PADDING].contains(k)) {
+        keep(&kind.to_be_bytes());
+        keep(data.rest());
+    }
+    Ok(ClientHello { session_id, server_name, share, shares: shares.len(), early, alpn: alpn.is_some(), kept })
 }
 
 /// A handshake message: its type, its length, its body.

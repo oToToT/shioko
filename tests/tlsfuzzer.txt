@@ -87,7 +87,6 @@ run test-tls13-session-resumption.py
     fail TLS 1\.2 ~ protocol_version ~ no 1.2
     fail . ~ ApplicationData ~ no psk: no NewSessionTicket is sent
 run test-tls13-shuffled-extentions.py
-    fail ^HRR reversed order ~ Handshake(server_hello) ~ the second ClientHello is not compared with the first: RFC 8446 4.1.2 puts that duty on the client
 run test-tls13-signature-algorithms.py
 run test-tls13-symetric-ciphers.py
     fail TLS_AES_128_CCM|TLS_AES_256_GCM ~ handshake_failure ~ profile: the probe offers only this suite
