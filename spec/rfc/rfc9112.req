@@ -15,7 +15,7 @@
 = code parse request heads, response heads and chunk framing as octets through the byte cursor; never decode a message as a Unicode string before its lines are delimited
 = test octets_pass_through_as_they_are
 > A sender MUST NOT generate a bare CR (a CR character not immediately followed by LF) within any protocol elements other than the content.
-= code write every start-line, field line and chunk line ourselves with CRLF line ends and no other CR: heads are never copied (PLAN 6), a head holding a bare CR is refused before anything is forwarded, chunk extensions and trailers are not re-emitted
+= code write every start-line, field line and chunk line ourselves with CRLF line ends and no other CR: heads are never copied (SPEC 6), a head holding a bare CR is refused before anything is forwarded, chunk extensions and trailers are not re-emitted
 = test the_request_head_is_written_by_us
 = test the_response_head_is_written_by_us
 = test chunk_extensions_and_trailers_are_dropped
@@ -34,7 +34,7 @@
 = test response_heads
 = test bare_cr_from_upstreams
 > An HTTP/1.1 user agent MUST NOT preface or follow a request with an extra CRLF.
-= peer user agent: empty lines before a request-line are skipped (PLAN 6)
+= peer user agent: empty lines before a request-line are skipped (SPEC 6)
 > If terminating the request message body with a line-ending is desired, then the user agent MUST count the terminating CRLF octets as part of the message body length.
 = peer user agent: nothing to do; a length-delimited body is read to exactly Content-Length octets and whatever follows is read as the start of the next request (empty lines skipped)
 > In the interest of robustness, a server that is expecting to receive and parse a request-line SHOULD ignore at least one empty line (CRLF) received prior to the request-line.
@@ -92,7 +92,7 @@
 = code answer 400 to a request line whose target is not origin form or holds anything but visible ASCII characters
 = test request_lines
 = test request_line_is_sound
-= deviation PLAN 6, known departures: a target may hold visible ASCII characters the URI grammar forbids (| ^ [ ] { } ` " < > \) because browsers send them unencoded; such a request line is accepted and its target forwarded as received, only the redirect location encodes them
+= deviation SPEC 6, known departures: a target may hold visible ASCII characters the URI grammar forbids (| ^ [ ] { } ` " < > \) because browsers send them unencoded; such a request line is accepted and its target forwarded as received, only the redirect location encodes them
 > A recipient SHOULD NOT attempt to autocorrect and then process the request without a redirect, since the invalid request-line might be deliberately crafted to bypass security filters along the request chain.
 = code never repair a request line: no whitespace-tolerant splitting, no trimming, no re-encoding of the target; write the target octets upstream as received or reject with 400
 = test request_lines
@@ -108,7 +108,7 @@
 = test the_request_head_is_written_by_us
 = peer client: a Host that does not name the SNI site gets 421; on port 80 an unknown Host gets 404
 > If the authority component is missing or undefined for the target URI, then a client MUST send a Host header field with an empty field value.
-= peer client: an empty Host is neither `name` nor `name:port`, so it is malformed and gets 400 (PLAN 6)
+= peer client: an empty Host is neither `name` nor `name:port`, so it is malformed and gets 400 (SPEC 6)
 > A server MUST respond with a 400 (Bad Request) status code to any HTTP/1.1 request message that lacks a Host header field and to any request message that contains more than one Host header field line or a Host header field with an invalid field value.
 = row step idle close plain fail:400 => closed close plain error:400
 = code answer 400 and close when a request head, once read, has no Host field line, more than one, or one whose value is not a non-empty host (reg-name, IPv4 address or bracketed IP literal) with an optional, possibly empty, port; this comes before any 501
@@ -137,19 +137,19 @@
 > A proxy that forwards such a request MUST generate a new Host field value based on the received request-target rather than forward the received Host field value.
 = peer forward proxy: not shioko's role; shioko answers an absolute-form target with 400
 > When an origin server receives a request with an absolute-form of request-target, the origin server MUST ignore the received Host header field (if any) and instead use the host information of the request-target.
-= deviation absolute-form targets are refused with 400 (PLAN 6, known departures: "accepting them means deciding between two host names in one request"), so the Host field is never weighed against a target's host
+= deviation absolute-form targets are refused with 400 (SPEC 6, known departures: "accepting them means deciding between two host names in one request"), so the Host field is never weighed against a target's host
 = row step idle close plain fail:400 => closed close plain error:400
 > A server MUST accept the absolute-form in requests even though most HTTP/1.1 clients will only send the absolute-form to a proxy.
-= deviation PLAN 6, known departures: absolute-form request targets are answered with 400, although a server must accept them
+= deviation SPEC 6, known departures: absolute-form request targets are answered with 400, although a server must accept them
 = row step idle close plain fail:400 => closed close plain error:400
 
 @ 3.2.3
 > When making a CONNECT request to establish a tunnel through one or more proxies, a client MUST send only the host and port of the tunnel destination as the request-target.
-= peer client: CONNECT is meant for forward proxies; shioko answers any CONNECT request with 400 and closes (PLAN 6)
+= peer client: CONNECT is meant for forward proxies; shioko answers any CONNECT request with 400 and closes (SPEC 6)
 
 @ 3.2.4
 > When a client wishes to request OPTIONS for the server as a whole, as opposed to a specific named resource of that server, the client MUST send only "*" (%x2A) as the request-target.
-= peer client: nothing to do; "*" is refused with 400 even with OPTIONS, as nginx refuses it (PLAN 6, known departures)
+= peer client: nothing to do; "*" is refused with 400 even with OPTIONS, as nginx refuses it (SPEC 6, known departures)
 > If a proxy receives an OPTIONS request with an absolute-form of request-target in which the URI has an empty path and no query component, then the last proxy on the request chain MUST send a request-target of "*" when it forwards the request to the indicated origin server.
 = peer forward proxy: shioko is not a proxy on an absolute-form chain; it answers an absolute-form target with 400
 
@@ -234,7 +234,7 @@
 > A client MUST NOT send a request containing Transfer-Encoding unless it knows the server will handle HTTP/1.1 requests (or later minor revisions); such knowledge might be in the form of specific user configuration or by remembering the version of a prior received response.
 = peer client: a Transfer-Encoding in an HTTP/1.0 request is rejected with 400 and the connection is closed
 = row request_framing 1.0 none chunked => reject
-= deviation the upstream is required to speak HTTP/1.1; that is a requirement on the configuration (PLAN 3 and 6), not something shioko finds out
+= deviation the upstream is required to speak HTTP/1.1; that is a requirement on the configuration (SPEC 3 and 6), not something shioko finds out
 > A server MUST NOT send a response containing Transfer- Encoding unless the corresponding request indicates HTTP/1.1 (or later minor revisions).
 = row client_framing chunked 1.0 => close
 = row client_framing close 1.0 => close
@@ -331,7 +331,7 @@
 = peer user agent: without either field the request has no body (request_framing 1.1 none none => empty) and the octets that follow are read as the next request head, which normally ends in 400 and a close
 > A client MUST NOT use the chunked transfer coding unless it knows the server will handle HTTP/1.1 (or later) requests; such knowledge can be in the form of specific user configuration or by remembering the version of a prior received response.
 = row request_framing 1.0 none chunked => reject
-= deviation the upstream is required to speak HTTP/1.1; that is a requirement on the configuration (PLAN 3 and 6), not something shioko finds out
+= deviation the upstream is required to speak HTTP/1.1; that is a requirement on the configuration (SPEC 3 and 6), not something shioko finds out
 > A client MUST NOT process, cache, or forward such extra data as a separate response, since such behavior would be vulnerable to cache poisoning.
 = test one_final_response
 = test response_intact
@@ -397,7 +397,7 @@
 
 @ 7.4
 > A client MUST NOT send the chunked transfer coding name in TE; chunked is always acceptable for HTTP/1.1 recipients.
-= code never write a TE field in an upstream request head (TE is on PLAN 6's hop-by-hop list)
+= code never write a TE field in an upstream request head (TE is on SPEC 6's hop-by-hop list)
 = test the_request_head_is_written_by_us
 = peer client: a TE field that names chunked is removed with the other hop-by-hop fields; nothing else to do
 > Since the TE header field only applies to the immediate connection, a sender of TE MUST also send a "TE" connection option within the Connection header field (Section 7.6.1 of [HTTP]) in order to prevent the TE header field from being forwarded by intermediaries that do not support its semantics.
@@ -427,13 +427,13 @@
 @ 9.3
 > HTTP implementations SHOULD support persistent connections.
 = row step relay keep plain done:- => idle close plain read_head:-
-= deviation towards the upstream there are no persistent connections: PLAN 2 drops upstream keepalive and PLAN 6 opens one connection per request "so one request cannot contaminate another"
+= deviation towards the upstream there are no persistent connections: SPEC 2 drops upstream keepalive and SPEC 6 opens one connection per request "so one request cannot contaminate another"
 > A client that does not support persistent connections MUST send the "close" connection option in every request message.
 = code write "Connection: close" in every upstream request head that is not an upgrade request
 = test request_intact
 = test the_request_head_is_written_by_us
 = test what_is_not_a_websocket_upgrade_is_not_forwarded_as_one
-= deviation PLAN 6, known departures: an upgrade request goes upstream with "Connection: upgrade" and without "close", for the sake of WebSocket servers; the connection is closed after any answer other than 101 all the same
+= deviation SPEC 6, known departures: an upgrade request goes upstream with "Connection: upgrade" and without "close", for the sake of WebSocket servers; the connection is closed after any answer other than 101 all the same
 > A server that does not support persistent connections MUST send the "close" connection option in every response message that does not have a 1xx (Informational) status code.
 = row step response close plain final:delimited => relay close plain respond:close
 = row step response keep plain final:until_close => relay close plain respond:close
@@ -480,16 +480,16 @@
 > Implementations SHOULD constantly monitor open connections for a received closure signal and respond to it as appropriate, since prompt closure of both sides of a connection enables allocated system resources to be reclaimed.
 = row step idle keep plain gone:- => closed close plain
 = row step relay keep plain gone:- => closed close plain
-= deviation PLAN 6, known departures: the client connection is not watched for closing while we wait for the upstream; a closure is noticed at the next client read or write
+= deviation SPEC 6, known departures: the client connection is not watched for closing while we wait for the upstream; a closure is noticed at the next client read or write
 > A server SHOULD sustain persistent connections, when possible, and allow the underlying transport's flow-control mechanisms to resolve temporary overloads rather than terminate connections with the expectation that clients will retry.
 = row step relay keep plain done:- => idle close plain read_head:-
 = check Server.CapRespected
 = code when all slots are taken, stop calling accept and let the kernel queue fill instead of closing established connections
 = test no_more_connections_are_served_at_once_than_the_cap_allows
 > A client sending a message body SHOULD monitor the network connection for an error response while it is transmitting the request.
-= deviation PLAN 6, known departures: the upstream is not watched for an early error response while a request body is being sent; the response is read only after the whole request has been sent (check Http.ResponseAfterRequest)
+= deviation SPEC 6, known departures: the upstream is not watched for an early error response while a request body is being sent; the response is read only after the whole request has been sent (check Http.ResponseAfterRequest)
 > If the client sees a response that indicates the server does not wish to receive the message body and is closing the connection, the client SHOULD immediately cease transmitting the body and close its side of the connection.
-= deviation PLAN 6, known departures: an early upstream response is never seen, so the body is sent to its end or until a write fails, and a failed write gives the client 502
+= deviation SPEC 6, known departures: an early upstream response is never seen, so the body is sent to its end or until a write fails, and a failed write gives the client 502
 = row step forward keep plain fail:502 => closed close plain error:502
 
 @ 9.6
@@ -500,7 +500,7 @@
 = test an_error
 = test requests_we_refuse_and_why
 = test request_intact
-= deviation PLAN 6, known departures: an upgrade request goes upstream without "close" although the connection is closed after any answer other than 101
+= deviation SPEC 6, known departures: an upgrade request goes upstream without "close" although the connection is closed after any answer other than 101
 > A client that sends a "close" connection option MUST NOT send further requests on that connection (after the one containing the "close") and MUST close the connection after reading the final response message corresponding to this request.
 = code send exactly one request on an upstream connection and close it once the final response is complete or the tunnel ends
 = test request_intact

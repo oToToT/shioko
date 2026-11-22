@@ -16,7 +16,7 @@
 #
 # The reasons, in short:
 #   profile   shioko offers TLS 1.3 with TLS_CHACHA20_POLY1305_SHA256,
-#             X25519 and ecdsa_secp256r1_sha256 only (README, PLAN.md 5)
+#             X25519 and ecdsa_secp256r1_sha256 only (README, SPEC.md 5)
 #   no 1.2    TLS 1.2 and older are refused with protocol_version
 #   no psk    no tickets, no resumption, no external PSKs
 

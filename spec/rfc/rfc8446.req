@@ -33,9 +33,9 @@
 
 @ 2.2
 > When a client offers resumption via a PSK, it SHOULD also supply a "key_share" extension to the server to allow the server to decline resumption and fall back to a full handshake, if needed.
-= peer client: nothing to do; offered PSKs are ignored and a full handshake follows, and a ClientHello without key_share is refused with missing_extension (PLAN 5)
+= peer client: nothing to do; offered PSKs are ignored and a full handshake follows, and a ClientHello without key_share is refused with missing_extension (SPEC 5)
 > When PSKs are provisioned out of band, the PSK identity and the KDF hash algorithm to be used with the PSK MUST also be provisioned.
-= unused external PSK: no PSK can be configured; offered PSKs are ignored and a full handshake follows (PLAN 5)
+= unused external PSK: no PSK can be configured; offered PSKs are ignored and a full handshake follows (SPEC 5)
 
 @ 4
 > Protocol messages MUST be sent in the order defined in Section 4.4.1 and shown in the diagrams in Section 2.
@@ -64,7 +64,7 @@
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
 > If the server selects a PSK, then it MUST also select a key establishment mode from the set indicated by the client's "psk_key_exchange_modes" extension (at present, PSK alone or with (EC)DHE).
-= unused PSK: shioko never selects a PSK; offered PSKs are ignored and a full handshake follows (PLAN 5)
+= unused PSK: shioko never selects a PSK; offered PSKs are ignored and a full handshake follows (SPEC 5)
 > If the server selects an (EC)DHE group and the client did not offer a compatible "key_share" extension in the initial ClientHello, the server MUST respond with a HelloRetryRequest (Section 4.1.4) message.
 = row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
 = code treat a ClientHello whose key_share extension has no entry for x25519 or X25519MLKEM768 as hello_retry, and answer with a HelloRetryRequest whose selected_group is x25519 if listed, else X25519MLKEM768
@@ -95,13 +95,13 @@
 = row step open whole even strict protected:hello => closed whole even strict alert:unexpected_message
 = row step open whole even strict protected:hello_retry => closed whole even strict alert:unexpected_message
 > If a server established a TLS connection with a previous version of TLS and receives a TLS 1.3 ClientHello in a renegotiation, it MUST retain the previous protocol version.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6); no pre-1.3 connection ever exists to renegotiate
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); no pre-1.3 connection ever exists to renegotiate
 > In particular, it MUST NOT negotiate TLS 1.3.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6); no pre-1.3 connection ever exists to renegotiate
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); no pre-1.3 connection ever exists to renegotiate
 > In TLS 1.3, the client indicates its version preferences in the "supported_versions" extension (Section 4.2.1) and the legacy_version field MUST be set to 0x0303, which is the version number for TLS 1.2.
 = peer client: nothing to do; legacy_version takes no part in choosing the version when supported_versions is present (4.2.1)
 > A client which has a cached session ID set by a pre-TLS 1.3 server SHOULD set this field to that value.
-= peer client: nothing to do; the session id is only echoed (PLAN 5)
+= peer client: nothing to do; the session id is only echoed (SPEC 5)
 > In compatibility mode (see Appendix D.4), this field MUST be non-empty, so a client not offering a pre-TLS 1.3 session MUST generate a new 32-byte value.
 = peer client: nothing to do; a legacy_session_id of any length from 0 to 32 is echoed
 > This value need not be random but SHOULD be unpredictable to avoid implementations fixating on a specific value (also known as ossification).
@@ -123,17 +123,17 @@
 = test refused_hellos_get_the_alert_of_the_plan
 = row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
 > Note that TLS 1.3 servers might receive TLS 1.2 or prior ClientHellos which contain other compression methods and (if negotiating such a prior version) MUST follow the procedures for the appropriate prior version of TLS.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6), whatever its compression methods
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6), whatever its compression methods
 > Servers MUST ignore unrecognized extensions.
 = code skip every ClientHello extension whose type shioko does not act on, without error and without looking at its contents
 = test what_a_client_hello_may_offer
 = test unknown_values_are_ignored
 > If negotiating a version of TLS prior to 1.3, a server MUST check that the message either contains no data after legacy_compression_methods or that it contains a valid extensions block with no data following.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6)
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6)
 = code take a ClientHello that ends right after legacy_compression_methods for a pre-1.3 hello and answer protocol_version, not decode_error
 = test what_is_refused_and_with_which_alert
 > If not, then it MUST abort the handshake with a "decode_error" alert.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6)
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6)
 = code reject a ClientHello whose extensions block is malformed or is followed by more bytes, with decode_error
 = test bytes_past_the_extensions_or_an_extension
 = row step start whole even strict invalid:decode_error => closed whole even strict alert:decode_error
@@ -143,7 +143,7 @@
 = code encode ServerHello and HelloRetryRequest with legacy_version 0x0303
 = test our_messages_are_well_formed
 > The last 8 bytes MUST be overwritten as described below if negotiating TLS 1.2 or TLS 1.1, but the remaining bytes MUST be random.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6); no downgrade marker is ever written
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); no downgrade marker is ever written
 = code fill ServerHello.random with 32 fresh bytes from /dev/urandom for every handshake, and fail the handshake if they cannot be read
 = test every_server_random_is_new
 > This structure is generated by the server and MUST be generated independently of the ClientHello.random.
@@ -171,11 +171,11 @@
 = peer client: nothing to do; a server_hello sent to shioko is "other" and ends in unexpected_message
 = row step start whole even strict plain:other => closed whole even strict alert:unexpected_message
 > TLS 1.3 servers which negotiate TLS 1.2 or below in response to a ClientHello MUST set the last 8 bytes of their Random value specially in their ServerHello.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6); no downgrade marker is ever written
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); no downgrade marker is ever written
 > If negotiating TLS 1.2, TLS 1.3 servers MUST set the last 8 bytes of their Random value to the bytes:
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6); no downgrade marker is ever written
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); no downgrade marker is ever written
 > If negotiating TLS 1.1 or below, TLS 1.3 servers MUST, and TLS 1.2 servers SHOULD, set the last 8 bytes of their ServerHello.Random value to the bytes:
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6); no downgrade marker is ever written
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); no downgrade marker is ever written
 > TLS 1.3 clients receiving a ServerHello indicating TLS 1.2 or below MUST check that the last 8 bytes are not equal to either of these values.
 = peer client: nothing to do
 > TLS 1.2 clients SHOULD also check that the last 8 bytes are not equal to the second value if the ServerHello indicates TLS 1.1 or below.
@@ -193,7 +193,7 @@
 = code put exactly two extensions in the HelloRetryRequest: supported_versions and key_share with selected_group x25519 or X25519MLKEM768
 = test our_hellos_field_by_field
 > As with the ServerHello, a HelloRetryRequest MUST NOT contain any extensions that were not first offered by the client in its ClientHello, with the exception of optionally the "cookie" (see Section 4.2.2) extension.
-= code send a HelloRetryRequest only to a ClientHello that itself carries supported_versions and a key_share extension, and put nothing but supported_versions and key_share in it; a ClientHello without key_share gets missing_extension, and no cookie is ever sent (PLAN 5)
+= code send a HelloRetryRequest only to a ClientHello that itself carries supported_versions and a key_share extension, and put nothing but supported_versions and key_share in it; a ClientHello without key_share gets missing_extension, and no cookie is ever sent (SPEC 5)
 = test our_hellos_field_by_field
 = test what_is_refused_and_with_which_alert
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
@@ -237,7 +237,7 @@
 = test what_a_client_hello_may_offer
 = test unknown_values_are_ignored
 > +--------------------------------------------------+-------------+ | Extension | TLS 1.3 | +--------------------------------------------------+-------------+ | server_name [RFC6066] | CH, EE | | | | | max_fragment_length [RFC6066] | CH, EE | | | | | status_request [RFC6066] | CH, CR, CT | | | | | supported_groups [RFC7919] | CH, EE | | | | | signature_algorithms (RFC 8446) | CH, CR | | | | | use_srtp [RFC5764] | CH, EE | | | | | heartbeat [RFC6520] | CH, EE | | | | | application_layer_protocol_negotiation [RFC7301] | CH, EE | | | | | signed_certificate_timestamp [RFC6962] | CH, CR, CT | | | | | client_certificate_type [RFC7250] | CH, EE | | | | | server_certificate_type [RFC7250] | CH, EE | | | | | padding [RFC7685] | CH | | | | | key_share (RFC 8446) | CH, SH, HRR | | | | | pre_shared_key (RFC 8446) | CH, SH | | | | | psk_key_exchange_modes (RFC 8446) | CH | | | | | early_data (RFC 8446) | CH, EE, NST | | | | | cookie (RFC 8446) | CH, HRR | | | | | supported_versions (RFC 8446) | CH, SH, HRR | | | | | certificate_authorities (RFC 8446) | CH, CR | | | | | oid_filters (RFC 8446) | CR | | | | | post_handshake_auth (RFC 8446) | CH | | | | | signature_algorithms_cert (RFC 8446) | CH, CR | +--------------------------------------------------+-------------+ When multiple extensions of different types are present, the extensions MAY appear in any order, with the exception of "pre_shared_key" (Section 4.2.11) which MUST be the last extension in the ClientHello (but can appear anywhere in the ServerHello extensions block).
-= peer client: a ClientHello with pre_shared_key anywhere but last is refused with illegal_parameter (PLAN 5)
+= peer client: a ClientHello with pre_shared_key anywhere but last is refused with illegal_parameter (SPEC 5)
 = row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
 > There MUST NOT be more than one extension of the same type in a given extension block.
 = code never encode two extensions of the same type in ServerHello, HelloRetryRequest or EncryptedExtensions
@@ -249,10 +249,10 @@
 
 @ 4.2.1
 > Implementations of this specification MUST send this extension in the ClientHello containing all versions of TLS which they are prepared to negotiate (for this specification, that means minimally 0x0304, but if previous versions of TLS are allowed to be negotiated, they MUST be present as well).
-= peer client: a ClientHello without supported_versions is a pre-1.3 hello and is refused with protocol_version (PLAN 2, change 6)
+= peer client: a ClientHello without supported_versions is a pre-1.3 hello and is refused with protocol_version (SPEC 2, change 6)
 = row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
 > If this extension is not present, servers which are compliant with this specification and which also support TLS 1.2 MUST negotiate TLS 1.2 or prior as specified in [RFC5246], even if ClientHello.legacy_version is 0x0304 or later.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6)
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6)
 > If this extension is present in the ClientHello, servers MUST NOT use the ClientHello.legacy_version value for version negotiation and MUST use only the "supported_versions" extension to determine client preferences.
 = code when supported_versions is present, choose the version from it alone; legacy_version takes no part in the choice
 = test what_a_client_hello_may_offer
@@ -270,7 +270,7 @@
 = test bug_repeated_extension_hid_the_version
 = row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
 > A server which negotiates a version of TLS prior to TLS 1.3 MUST set ServerHello.version and MUST NOT send the "supported_versions" extension.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6)
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6)
 > A server which negotiates TLS 1.3 MUST respond by sending a "supported_versions" extension containing the selected version value (0x0304).
 = code put supported_versions with selected_version 0x0304 in ServerHello
 = test our_hellos_field_by_field
@@ -286,11 +286,11 @@
 
 @ 4.2.2
 > When sending the new ClientHello, the client MUST copy the contents of the extension received in the HelloRetryRequest into a "cookie" extension in the new ClientHello.
-= unused cookie: shioko never puts a cookie in a HelloRetryRequest; a ClientHello that carries one is refused with illegal_parameter (PLAN 5)
+= unused cookie: shioko never puts a cookie in a HelloRetryRequest; a ClientHello that carries one is refused with illegal_parameter (SPEC 5)
 = row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
 = row step retry whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
 > Clients MUST NOT use cookies in their initial ClientHello in subsequent connections.
-= unused cookie: shioko never puts a cookie in a HelloRetryRequest; a ClientHello that carries one is refused with illegal_parameter (PLAN 5)
+= unused cookie: shioko never puts a cookie in a HelloRetryRequest; a ClientHello that carries one is refused with illegal_parameter (SPEC 5)
 = row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
 = row step retry whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
 > Servers operating statelessly MUST ignore these records.
@@ -299,7 +299,7 @@
 
 @ 4.2.3
 > The keys found in certificates MUST also be of appropriate type for the signature algorithms they are used with.
-= code at startup refuse a site unless its private key is a P-256 key whose public point appears in the leaf certificate, ecdsa_secp256r1_sha256 being the only scheme (PLAN 5)
+= code at startup refuse a site unless its private key is a P-256 key whose public point appears in the leaf certificate, ecdsa_secp256r1_sha256 being the only scheme (SPEC 5)
 = test a_key_that_does_not_belong_to_the_certificate_is_refused
 = test keys_we_cannot_use_are_refused
 > Clients which desire the server to authenticate itself via a certificate MUST send the "signature_algorithms" extension.
@@ -329,9 +329,9 @@
 > Clients offering these values MUST list them as the lowest priority (listed after all other algorithms in SignatureSchemeList).
 = peer client: nothing to do; the order of signature_algorithms is not used
 > TLS 1.3 servers MUST NOT offer a SHA-1 signed certificate unless no valid certificate chain can be produced without it (see Section 4.4.2.2).
-= deviation PLAN 5 (Certificates and keys): the chain is sent unparsed and "its order, key usage and signature algorithms are whatever the certificate file holds"; a SHA-1-signed chain would be sent as it is, the choice is the operator's (the "Known departures" list itself names only signature_algorithms_cert)
+= deviation SPEC 5 (Certificates and keys): the chain is sent unparsed and "its order, key usage and signature algorithms are whatever the certificate file holds"; a SHA-1-signed chain would be sent as it is, the choice is the operator's (the "Known departures" list itself names only signature_algorithms_cert)
 > TLS 1.3 implementations willing to negotiate TLS 1.2 MUST behave in accordance with the requirements of [RFC5246] when negotiating that version.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6)
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6)
 > They MUST NOT be offered or negotiated by any implementation.
 = code skip every signature_algorithms value other than 0x0403; never select or emit a legacy hash/signature pair
 = test a_whole_handshake_and_data_both_ways
@@ -339,9 +339,9 @@
 = code use only ECDSA P-256 with SHA-256 in CertificateVerify; values naming MD5, SHA-224 or DSA in signature_algorithms are skipped
 = test a_whole_handshake_and_data_both_ways
 > If TLS 1.2 is negotiated, implementations MUST be prepared to accept a signature that uses any curve that they advertised in the "supported_groups" extension.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6); shioko verifies no signature
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); shioko verifies no signature
 > - Implementations that advertise support for RSASSA-PSS (which is mandatory in TLS 1.3) MUST be prepared to accept a signature using that scheme even when TLS 1.2 is negotiated.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (PLAN 2, change 6); shioko verifies no signature
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer 0x0304 is refused with protocol_version (SPEC 2, change 6); shioko verifies no signature
 
 @ 4.2.4
 > The "certificate_authorities" extension is used to indicate the certificate authorities (CAs) which an endpoint supports and which SHOULD be used by the receiving endpoint to guide certificate selection.
@@ -381,9 +381,9 @@
 > Clients MUST NOT offer multiple KeyShareEntry values for the same group.
 = peer client: the design does not say which of two x25519 entries is used or whether the hello is refused; the RFC leaves the check to the server (illegal_parameter if made)
 > Clients MUST NOT offer any KeyShareEntry values for groups not listed in the client's "supported_groups" extension.
-= peer client: a ClientHello that lacks both of our groups is refused with handshake_failure (PLAN 5), and a share for a group missing from supported_groups with illegal_parameter
+= peer client: a ClientHello that lacks both of our groups is refused with handshake_failure (SPEC 5), and a share for a group missing from supported_groups with illegal_parameter
 > Upon receipt of this extension in a HelloRetryRequest, the client MUST verify that (1) the selected_group field corresponds to a group which was provided in the "supported_groups" extension in the original ClientHello and (2) the selected_group field does not correspond to a group which was provided in the "key_share" extension in the original ClientHello.
-= peer client: nothing to do; shioko asks for a retry only for a group that is listed and has no share (PLAN 5)
+= peer client: nothing to do; shioko asks for a retry only for a group that is listed and has no share (SPEC 5)
 > If either of these checks fails, then the client MUST abort the handshake with an "illegal_parameter" alert.
 = peer client: nothing to do
 > Otherwise, when sending the new ClientHello, the client MUST replace the original "key_share" extension with one containing only a new KeyShareEntry for the group indicated in the selected_group field of the triggering HelloRetryRequest.
@@ -407,7 +407,7 @@
 
 @ 4.2.8.1
 > Peers MUST validate each other's public key Y by ensuring that 1 < Y < p-1.
-= unused finite-field DHE groups: not supported (PLAN 2 drops DHE); ffdhe shares in a ClientHello are skipped unread
+= unused finite-field DHE groups: not supported (SPEC 2 drops DHE); ffdhe shares in a ClientHello are skipped unread
 
 @ 4.2.8.2
 > For the curves secp256r1, secp384r1, and secp521r1, peers MUST validate each other's public value Q by ensuring that the point is a valid point on the elliptic curve.
@@ -415,18 +415,18 @@
 
 @ 4.2.9
 > In order to use PSKs, clients MUST also send a "psk_key_exchange_modes" extension.
-= peer client: a ClientHello with pre_shared_key and no psk_key_exchange_modes is refused with missing_extension (PLAN 5)
+= peer client: a ClientHello with pre_shared_key and no psk_key_exchange_modes is refused with missing_extension (SPEC 5)
 > A client MUST provide a "psk_key_exchange_modes" extension if it offers a "pre_shared_key" extension.
-= peer client: a ClientHello with pre_shared_key and no psk_key_exchange_modes is refused with missing_extension (PLAN 5)
+= peer client: a ClientHello with pre_shared_key and no psk_key_exchange_modes is refused with missing_extension (SPEC 5)
 > If clients offer "pre_shared_key" without a "psk_key_exchange_modes" extension, servers MUST abort the handshake.
 = code reject a ClientHello that has pre_shared_key without psk_key_exchange_modes, with missing_extension
 = test what_is_refused_and_with_which_alert
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
 = row step retry whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
 > Servers MUST NOT select a key exchange mode that is not listed by the client.
-= unused PSK: shioko never selects a PSK, so never a PSK key exchange mode; offered PSKs are ignored and a full handshake follows (PLAN 5)
+= unused PSK: shioko never selects a PSK, so never a PSK key exchange mode; offered PSKs are ignored and a full handshake follows (SPEC 5)
 > Servers SHOULD NOT send NewSessionTicket with tickets that are not compatible with the advertised modes; however, if a server does so, the impact will just be that the client's attempts at resumption fail.
-= unused session tickets: no NewSessionTicket is ever sent (PLAN 5)
+= unused session tickets: no NewSessionTicket is ever sent (SPEC 5)
 > The server MUST NOT send a "psk_key_exchange_modes" extension.
 = unused PSK: psk_key_exchange_modes is never emitted in any server message
 > In this mode, the server MUST NOT supply a "key_share" value.
@@ -463,9 +463,9 @@
 = row step retry whole even strict plain:hello_early => closed whole even strict alert:illegal_parameter
 = row step retry whole even skipping plain:hello_early => closed whole even strict alert:illegal_parameter
 > In order to accept early data, the server MUST have accepted a PSK cipher suite and selected the first key offered in the client's "pre_shared_key" extension.
-= unused 0-RTT: early data is never accepted, no early_data extension is ever sent in EncryptedExtensions, and the early records are skipped (PLAN 5)
+= unused 0-RTT: early data is never accepted, no early_data extension is ever sent in EncryptedExtensions, and the early records are skipped (SPEC 5)
 > In addition, it MUST verify that the following values are the same as those associated with the selected PSK:
-= unused 0-RTT: early data is never accepted and early_data is never sent in EncryptedExtensions, so no PSK-associated version, suite or ALPN is compared; the client's early-data records are skipped (PLAN 5)
+= unused 0-RTT: early data is never accepted and early_data is never sent in EncryptedExtensions, so no PSK-associated version, suite or ALPN is compared; the client's early-data records are skipped (SPEC 5)
 > Future extensions MUST define their interaction with 0-RTT.
 = info requirement on future extension specifications
 > If any of these checks fail, the server MUST NOT respond with the extension and must discard all the first-flight data using one of the first two mechanisms listed above (thus falling back to 1-RTT or 2-RTT).
@@ -501,10 +501,10 @@
 > Clients, however, SHOULD store the SNI with the PSK to fulfill the requirements of Section 4.6.1.
 = peer client: nothing to do
 > Any unknown PSKs (e.g., ones not in the PSK database or encrypted with an unknown key) SHOULD simply be ignored.
-= code ignore every identity and binder of a pre_shared_key extension in ClientHello and never send pre_shared_key in ServerHello (PLAN 5: offered PSKs are ignored)
+= code ignore every identity and binder of a pre_shared_key extension in ClientHello and never send pre_shared_key in ServerHello (SPEC 5: offered PSKs are ignored)
 = test what_a_client_hello_may_offer
 > If no acceptable PSKs are found, the server SHOULD perform a non-PSK handshake if possible.
-= code serve a ClientHello that carries pre_shared_key and psk_key_exchange_modes with the full certificate handshake when it meets the other conditions of PLAN 5 (PLAN 5: a full handshake follows)
+= code serve a ClientHello that carries pre_shared_key and psk_key_exchange_modes with the full certificate handshake when it meets the other conditions of SPEC 5 (SPEC 5: a full handshake follows)
 = test what_a_client_hello_may_offer
 = row step start whole even strict plain:hello => wait_finished whole even strict send:server_hello send:ccs write_keys:handshake read_keys:handshake send:flight write_keys:data
 > If backward compatibility is important, client-provided, externally established PSKs SHOULD influence cipher suite selection.
@@ -524,7 +524,7 @@
 > If any other value is returned, the client MUST abort the handshake with an "illegal_parameter" alert.
 = peer client: nothing to do
 > The "pre_shared_key" extension MUST be the last extension in the ClientHello (this facilitates implementation as described below).
-= peer client: the ClientHello is refused with illegal_parameter (PLAN 5 table), see the next entry
+= peer client: the ClientHello is refused with illegal_parameter (SPEC 5 table), see the next entry
 > Servers MUST check that it is the last extension and otherwise fail the handshake with an "illegal_parameter" alert.
 = code reject a ClientHello in which pre_shared_key is present but is not the last extension, with illegal_parameter
 = test what_is_refused_and_with_which_alert
@@ -588,12 +588,12 @@
 > If an extension applies to the entire chain, it SHOULD be included in the first CertificateEntry.
 = unused CertificateEntry extensions: shioko sends none (see the code rule two entries above) and accepts no Certificate message
 > The sender's certificate MUST come in the first CertificateEntry in the list.
-= code send the certificates in the order of the site's cert file, and fail startup unless the public key of the private key occurs in the first certificate of that file (PLAN 5 "leaf certificate")
+= code send the certificates in the order of the site's cert file, and fail startup unless the public key of the private key occurs in the first certificate of that file (SPEC 5 "leaf certificate")
 = test chains_come_leaf_first
 = test our_messages_are_well_formed
 = test a_key_that_does_not_belong_to_the_certificate_is_refused
 > Each following certificate SHOULD directly certify the one immediately preceding it.
-= deviation the order of the chain is not checked: PLAN 5 sends fullchain.pem in file order as opaque bytes with "no X.509 parsing", so whether each certificate certifies the one before it is left to the operator's file
+= deviation the order of the chain is not checked: SPEC 5 sends fullchain.pem in file order as opaque bytes with "no X.509 parsing", so whether each certificate certifies the one before it is left to the operator's file
 > For maximum compatibility, all implementations SHOULD be prepared to handle potentially extraneous certificates and arbitrary orderings from any TLS version, with the exception of the end-entity certificate which MUST be first.
 = unused client certificates: shioko never receives or validates a certificate chain; that its own leaf comes first is the code rule two entries above
 > If the RawPublicKey certificate type was negotiated, then the certificate_list MUST contain no more than one CertificateEntry, which contains an ASN1_subjectPublicKeyInfo value as defined in [RFC7250], Section 3.
@@ -625,23 +625,23 @@
 = code send every certificate of the chain file as an X.509 cert_data entry and never negotiate another certificate type
 = test a_whole_handshake_and_data_both_ways
 = test our_messages_are_well_formed
-= deviation the X.509 version of the configured certificates is not checked: PLAN 5 "no X.509 parsing"; left to the operator's file
+= deviation the X.509 version of the configured certificates is not checked: SPEC 5 "no X.509 parsing"; left to the operator's file
 > - The server's end-entity certificate's public key (and associated restrictions) MUST be compatible with the selected authentication algorithm from the client's "signature_algorithms" extension (currently RSA, ECDSA, or EdDSA).
 = code sign only with ecdsa_secp256r1_sha256, refuse a ClientHello that does not offer it, and fail startup unless the P-256 public key of the private key occurs in the leaf certificate
 = test a_whole_handshake_and_data_both_ways
 = test what_is_refused_and_with_which_alert
 = test a_key_that_does_not_belong_to_the_certificate_is_refused
 > - The certificate MUST allow the key to be used for signing (i.e., the digitalSignature bit MUST be set if the Key Usage extension is present) with a signature scheme indicated in the client's "signature_algorithms"/"signature_algorithms_cert" extensions (see Section 4.2.3).
-= deviation RFC: the leaf must allow signing (digitalSignature set when Key Usage is present). Design: not checked, PLAN 5 sends the chain as opaque bytes with "no X.509 parsing"; a leaf without digitalSignature is served as it is
+= deviation RFC: the leaf must allow signing (digitalSignature set when Key Usage is present). Design: not checked, SPEC 5 sends the chain as opaque bytes with "no X.509 parsing"; a leaf without digitalSignature is served as it is
 > As servers MAY require the presence of the "server_name" extension, clients SHOULD send this extension, when applicable.
-= peer client: a ClientHello without server_name is refused with missing_extension (PLAN 5 table)
+= peer client: a ClientHello without server_name is refused with missing_extension (SPEC 5 table)
 > All certificates provided by the server MUST be signed by a signature algorithm advertised by the client if it is able to provide such a chain (see Section 4.2.3).
-= deviation signature_algorithms_cert is ignored because the chain is not parsed (PLAN 5, known departures): the site's one configured chain is sent to every client, whether or not its signatures are among the algorithms the client advertises
+= deviation signature_algorithms_cert is ignored because the chain is not parsed (SPEC 5, known departures): the site's one configured chain is sent to every client, whether or not its signatures are among the algorithms the client advertises
 > If the server cannot produce a certificate chain that is signed only via the indicated supported algorithms, then it SHOULD continue the handshake by sending the client a certificate chain of its choice that may include algorithms that are not known to be supported by the client.
 = code do not fail the handshake because of the signature algorithms inside the chain; send the configured chain
 = test signature_algorithms_cert_is_ignored
 > This fallback chain SHOULD NOT use the deprecated SHA-1 hash algorithm in general, but MAY do so if the client's advertisement permits it, and MUST NOT do so otherwise.
-= deviation RFC: the chain sent must not use SHA-1 unless the client advertises it. Design: not checked, the chain is opaque bytes (PLAN 5 "no X.509 parsing"); a configured chain signed with SHA-1 would be sent to every client
+= deviation RFC: the chain sent must not use SHA-1 unless the client advertises it. Design: not checked, the chain is opaque bytes (SPEC 5 "no X.509 parsing"); a configured chain signed with SHA-1 would be sent to every client
 > If the client cannot construct an acceptable chain using the provided certificates and decides to abort the handshake, then it MUST abort the handshake with an appropriate certificate-related alert (by default, "unsupported_certificate"; see Section 6.2 for more information).
 = peer client: its alert closes the connection without a reply
 
@@ -814,7 +814,7 @@
 = row step wait_finished whole even strict plain:ccs => wait_finished whole even strict
 = code raise the ccs event only for an unencrypted record of type 20 whose fragment is exactly the one byte 0x01, and recognise it before trying to decrypt
 = test change_cipher_spec_only_where_it_belongs
-= deviation between the pieces of a split handshake message the dummy ChangeCipherSpec is refused instead of dropped (retry partial and wait_finished partial answer plain:ccs with unexpected_message): PLAN 5 "nothing may come between the pieces", check SplitMessageNotInterleaved, following RFC 5.1 rather than "at any time"
+= deviation between the pieces of a split handshake message the dummy ChangeCipherSpec is refused instead of dropped (retry partial and wait_finished partial answer plain:ccs with unexpected_message): SPEC 5 "nothing may come between the pieces", check SplitMessageNotInterleaved, following RFC 5.1 rather than "at any time"
 > An implementation which receives any other change_cipher_spec value or which receives a protected change_cipher_spec record MUST abort the handshake with an "unexpected_message" alert.
 = row step wait_finished whole even strict protected:ccs => closed whole even strict alert:unexpected_message
 = row step open whole even strict protected:ccs => closed whole even strict alert:unexpected_message
@@ -857,7 +857,7 @@
 = test key_updates_from_the_client
 = test a_whole_handshake_and_data_both_ways
 > Implementations MUST verify that all messages immediately preceding a key change align with a record boundary; if not, then they MUST terminate the connection with an "unexpected_message" alert.
-= code refuse a record in which any byte follows the end of a ClientHello, a client Finished or a KeyUpdate, with unexpected_message (PLAN 5: each message must end its record)
+= code refuse a record in which any byte follows the end of a ClientHello, a client Finished or a KeyUpdate, with unexpected_message (SPEC 5: each message must end its record)
 = test a_client_hello_in_pieces_and_how_not_to
 = row step wait_finished whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
 = row step open whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
@@ -890,7 +890,7 @@
 = test bug_record_version_was_not_ignored
 = test records_are_framed_and_checked
 > The length MUST NOT exceed 2^14 bytes.
-= code put at most 2^14 bytes of content in any record shioko writes: split the flight over several records when it is longer (PLAN 5: our handshake messages are split into records of at most 2^14 bytes), and split the application data of one write over as many records as it needs
+= code put at most 2^14 bytes of content in any record shioko writes: split the flight over several records when it is longer (SPEC 5: our handshake messages are split into records of at most 2^14 bytes), and split the application data of one write over as many records as it needs
 = test large_data_goes_in_records_of_16k_at_most
 = test a_flight_larger_than_a_record
 > An endpoint that receives a record that exceeds this length MUST terminate the connection with a "record_overflow" alert.
@@ -924,7 +924,7 @@
 = row step open whole even strict undecryptable:- => closed whole even strict alert:bad_record_mac
 = row step wait_finished whole even strict undecryptable:- => closed whole even strict alert:bad_record_mac
 = check Handshake.SkipOnlyEarlyData
-= code fail with bad_record_mac whenever AEAD opening of a record fails; the one exception is refused early data, which is skipped as RFC 8446 4.2.10 requires, up to 16 KB (PLAN section 5)
+= code fail with bad_record_mac whenever AEAD opening of a record fails; the one exception is refused early data, which is skipped as RFC 8446 4.2.10 requires, up to 16 KB (SPEC section 5)
 = test records_under_old_keys_are_bad_record_mac
 = test early_data_is_skipped_up_to_a_limit
 > An AEAD algorithm used in TLS 1.3 MUST NOT produce an expansion greater than 255 octets.
@@ -942,7 +942,7 @@
 = test a_whole_handshake_and_data_both_ways
 = test key_updates_from_the_client
 > If a TLS implementation would need to wrap a sequence number, it MUST either rekey (Section 4.6.3) or terminate the connection.
-= code end the connection instead of sealing or opening a record once the sequence number of that key would wrap past 2^64 - 1; no sequence number is ever used twice (PLAN section 5: a sequence number that would wrap ends the connection)
+= code end the connection instead of sealing or opening a record once the sequence number of that key would wrap past 2^64 - 1; no sequence number is ever used twice (SPEC section 5: a sequence number that would wrap ends the connection)
 = test sequence_numbers_do_not_wrap
 = test bug_internal_failures_ended_silently
 > An AEAD algorithm where N_MAX is less than 8 bytes MUST NOT be used with TLS.
@@ -967,7 +967,7 @@
 = test padding_is_stripped_and_content_must_have_a_type
 = row step open whole even strict invalid:unexpected_message => closed whole even strict alert:unexpected_message
 > The presence of padding does not change the overall record size limitations: the full encoded TLSInnerPlaintext MUST NOT exceed 2^14 + 1 octets.
-= code split outgoing application data and our own handshake messages so that no record carries more than 2^14 octets of content (PLAN section 5)
+= code split outgoing application data and our own handshake messages so that no record carries more than 2^14 octets of content (SPEC section 5)
 = test large_data_goes_in_records_of_16k_at_most
 = test a_flight_larger_than_a_record
 = code reject a record whose AEAD output (content, type and padding together) exceeds 2^14 + 1 octets with record_overflow
@@ -997,7 +997,7 @@
 = code keep handshake and traffic secrets only in the per-connection state, overwrite and drop them when the connection ends, failed or not, and cache nothing across connections
 = test bug_handshake_secrets_were_never_wiped
 = test sequence_numbers_do_not_wrap
-= unused session tickets and PSKs: none are ever issued (PLAN section 5), so there is nothing to keep or to discard
+= unused session tickets and PSKs: none are ever issued (SPEC section 5), so there is nothing to keep or to discard
 > All the alerts listed in Section 6.2 MUST be sent with AlertLevel=fatal and MUST be treated as error alerts when received regardless of the AlertLevel in the message.
 = code encode every alert other than close_notify with level fatal(2)
 = test our_messages_are_well_formed
@@ -1038,11 +1038,11 @@
 = row step open whole even strict close:- => closed whole even strict alert:close_notify
 = row step start whole even strict close:- => closed whole even strict alert:close_notify
 = row step open whole even strict protected:close_notify => closed whole even strict alert:close_notify
-= code feed the close event, which sends close_notify, when the application is done, on every deadline and when the client's stream ends; the lost event, which sends nothing, is only for a failed transport that cannot be written to any more (PLAN section 5)
+= code feed the close event, which sends close_notify, when the application is done, on every deadline and when the client's stream ends; the lost event, which sends nothing, is only for a failed transport that cannot be written to any more (SPEC section 5)
 = test bug_close_notify_was_missing_on_shutdown
 = test the_end_of_the_client_stream_is_answered
 = test the_handshake_has_a_deadline
-= deviation PLAN 5, known departures: ending at once while the other thread of a tunnel is blocked writing to the client sends no close_notify, since the record being written can neither be finished nor interleaved
+= deviation SPEC 5, known departures: ending at once while the other thread of a tunnel is blocked writing to the client sends no close_notify, since the record being written can neither be finished nor interleaved
 > If the application protocol using TLS provides that any data may be carried over the underlying transport after the TLS connection is closed, the TLS implementation MUST receive a "close_notify" alert before indicating end-of-data to the application layer.
 = unused carrying data over the transport after TLS has closed: shioko shuts the socket down when the TLS connection ends, so nothing ever follows on it
 
@@ -1070,7 +1070,7 @@
 = test bug_unknown_record_type_got_decode_error
 = test bug_empty_alert_got_the_wrong_alert
 > The implementation SHOULD provide a way to facilitate logging the sending and receiving of alerts.
-= code log every alert sent and every alert received with its description, except close_notify, the normal end of every connection, and log an empty or malformed alert record (PLAN section 5); a received description is logged before the record is reduced to the alert event
+= code log every alert sent and every alert received with its description, except close_notify, the normal end of every connection, and log an empty or malformed alert record (SPEC section 5); a received description is logged before the record is reduced to the alert event
 = test other_alerts_end_the_connection_and_are_logged
 = test bug_plaintext_alert_after_our_keys_was_not_logged
 = test bug_empty_alert_got_the_wrong_alert
@@ -1080,19 +1080,19 @@
 = code overwrite each secret (the ECDHE output, the early, handshake and master secrets, superseded traffic secrets) as soon as everything derived from it has been computed
 = test bug_master_secret_outlived_its_use
 = test bug_handshake_secrets_were_never_wiped
-= deviation PLAN 5, known departures: without unsafe code the compiler may drop the overwrites; they are best effort
-= deviation PLAN section 5, known departures: secrets are overwritten when no longer needed, but without unsafe code the compiler is free to drop such writes, so erasure is not guaranteed
+= deviation SPEC 5, known departures: without unsafe code the compiler may drop the overwrites; they are best effort
+= deviation SPEC section 5, known departures: secrets are overwritten when no longer needed, but without unsafe code the compiler is free to drop such writes, so erasure is not guaranteed
 
 @ 7.2
 > Once client_/server_application_traffic_secret_N+1 and its associated traffic keys have been computed, implementations SHOULD delete client_/server_application_traffic_secret_N and its associated traffic keys.
 = code on every KeyUpdate replace the traffic secret, key and IV of that direction in place, so generation N is no longer held once N+1 is installed
 = test the_next_generation_starts_over
 = check Handshake.KeysMoveForward
-= deviation PLAN section 5, known departures: the old secret and keys are overwritten, but without unsafe code the compiler is free to drop such writes
+= deviation SPEC section 5, known departures: the old secret and keys are overwritten, but without unsafe code the compiler is free to drop such writes
 
 @ 7.4.2
 > Note that this octet string ("Z" in IEEE 1363 terminology) as output by FE2OSP (the Field Element to Octet String Conversion Primitive) has constant length for any given field; leading zeros found in this octet string MUST NOT be truncated.
-= unused ECDH over secp256r1, secp384r1 and secp521r1: only X25519 is implemented; key shares for other groups are skipped, and a ClientHello that lacks X25519 is refused with handshake_failure (PLAN section 5)
+= unused ECDH over secp256r1, secp384r1 and secp521r1: only X25519 is implemented; key shares for other groups are skipped, and a ClientHello that lacks X25519 is refused with handshake_failure (SPEC section 5)
 > For these curves, implementations SHOULD use the approach specified in [RFC7748] to calculate the Diffie-Hellman shared secret.
 = code compute the X25519 public key and shared secret with the RFC 7748 function (libcrux-curve25519) and use the 32-byte output raw; test against tests/vectors/x25519.txt
 = test x25519_rfc7748
@@ -1105,7 +1105,7 @@
 = test an_all_zero_share_is_illegal
 = row step start whole even strict invalid:illegal_parameter => closed whole even strict alert:illegal_parameter
 > If implementors use an alternative implementation of these elliptic curves, they SHOULD perform the additional checks specified in Section 7 of [RFC7748].
-= unused an alternative implementation of the curves: X25519 is the RFC 7748 ladder from libcrux-curve25519 (PLAN section 7), so the extra checks of RFC 7748 section 7 are not called for
+= unused an alternative implementation of the curves: X25519 is the RFC 7748 ladder from libcrux-curve25519 (SPEC section 7), so the extra checks of RFC 7748 section 7 are not called for
 
 @ 7.5
 > Implementations MUST use the exporter_master_secret unless explicitly specified by the application.
@@ -1119,42 +1119,42 @@
 
 @ 8
 > Servers SHOULD provide that level of replay safety by implementing one of the methods described in this section or by equivalent means.
-= unused 0-RTT: early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 > Therefore, in normal operation, clients will not know which, if any, of these mechanisms servers actually implement and hence MUST only send early data which they deem safe to be replayed.
 = peer client: nothing to do; shioko never accepts early data: its records are skipped, so nothing a client puts in them is delivered, let alone replayed
 > The server MUST ensure that any instance of it (be it a machine, a thread, or any other entity within the relevant serving infrastructure) would accept 0-RTT for the same 0-RTT handshake at most once; this limits the number of replays to the number of server instances in the deployment.
-= unused 0-RTT: early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 > The "at most once per server instance" guarantee is a minimum requirement; servers SHOULD limit 0-RTT replays further when feasible.
-= unused 0-RTT: early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 > The second class of attack cannot be prevented at the TLS layer and MUST be dealt with by any application.
-= info binds the application protocol above TLS (the HTTP client and the upstream service), not the TLS implementation; the design has no step in which shioko itself sends a request a second time (one upstream connection per request, PLAN section 6)
+= info binds the application protocol above TLS (the HTTP client and the upstream service), not the TLS implementation; the design has no step in which shioko itself sends a request a second time (one upstream connection per request, SPEC section 6)
 
 @ 8.2
 > Servers MAY also implement data stores with false positives, such as Bloom filters, in which case they MUST respond to apparent replay by rejecting 0-RTT but MUST NOT abort the handshake.
-= unused 0-RTT: early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 > The server MUST derive the storage key only from validated sections of the ClientHello.
-= unused 0-RTT: early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 > When implementations are freshly started, they SHOULD reject 0-RTT as long as any portion of their recording window overlaps the startup time.
-= unused 0-RTT: early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 
 @ 9.1
 > A TLS-compliant application MUST implement the TLS_AES_128_GCM_SHA256 [GCM] cipher suite and SHOULD implement the TLS_AES_256_GCM_SHA384 [GCM] and TLS_CHACHA20_POLY1305_SHA256 [RFC8439] cipher suites (see Appendix B.4).
-= deviation PLAN section 5, known departures: TLS_AES_128_GCM_SHA256 is not implemented (nor TLS_AES_256_GCM_SHA384); the one suite is TLS_CHACHA20_POLY1305_SHA256, and section 11 accepts that a client offering only AES-GCM cannot connect
+= deviation SPEC section 5, known departures: TLS_AES_128_GCM_SHA256 is not implemented (nor TLS_AES_256_GCM_SHA384); the one suite is TLS_CHACHA20_POLY1305_SHA256, and section 11 accepts that a client offering only AES-GCM cannot connect
 > A TLS-compliant application MUST support digital signatures with rsa_pkcs1_sha256 (for certificates), rsa_pss_rsae_sha256 (for CertificateVerify and certificates), and ecdsa_secp256r1_sha256.
-= deviation RSA signatures are not implemented; only ecdsa_secp256r1_sha256 is, and a site needs an ECDSA P-256 certificate (PLAN 5, known departures)
+= deviation RSA signatures are not implemented; only ecdsa_secp256r1_sha256 is, and a site needs an ECDSA P-256 certificate (SPEC 5, known departures)
 > A TLS-compliant application MUST support key exchange with secp256r1 (NIST P-256) and SHOULD support key exchange with X25519 [RFC7748].
-= deviation PLAN section 5, known departures: key exchange over secp256r1 is not implemented; the groups are X25519 (the SHOULD half) and X25519MLKEM768, and section 11 accepts that a client offering only secp256r1 cannot connect
+= deviation SPEC section 5, known departures: key exchange over secp256r1 is not implemented; the groups are X25519 (the SHOULD half) and X25519MLKEM768, and section 11 accepts that a client offering only secp256r1 cannot connect
 
 @ 9.2
 > In the absence of an application profile standard specifying otherwise, a TLS-compliant application MUST implement the following TLS extensions:
-= code parse supported_versions, signature_algorithms, supported_groups, key_share and server_name in a ClientHello and act on them as the alert table in PLAN section 5 says
+= code parse supported_versions, signature_algorithms, supported_groups, key_share and server_name in a ClientHello and act on them as the alert table in SPEC section 5 says
 = test what_is_refused_and_with_which_alert
 = test bug_extension_contents_were_decoded_after_other_checks
 = test refused_hellos_get_the_alert_of_the_plan
-= code never put a cookie in HelloRetryRequest, and refuse a ClientHello that carries a cookie with illegal_parameter (PLAN section 5)
+= code never put a cookie in HelloRetryRequest, and refuse a ClientHello that carries a cookie with illegal_parameter (SPEC section 5)
 = test what_is_refused_and_with_which_alert
 = test our_hellos_field_by_field
-= deviation PLAN section 5, known departures: signature_algorithms_cert is ignored, because the chain is sent as opaque bytes and not parsed
+= deviation SPEC section 5, known departures: signature_algorithms_cert is ignored, because the chain is sent as opaque bytes and not parsed
 > All implementations MUST send and use these extensions when offering applicable features:
 = info introduces the list that follows; each item has its own entry below
 > - "supported_versions" is REQUIRED for all ClientHello, ServerHello, and HelloRetryRequest messages.
@@ -1183,20 +1183,20 @@
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
 = row step start whole even strict plain:hello_retry => retry whole even strict send:retry send:ccs
 > - "pre_shared_key" is REQUIRED for PSK key agreement.
-= unused PSK key agreement: offered PSKs are ignored and a full handshake follows; pre_shared_key anywhere but last in the ClientHello gets illegal_parameter (PLAN section 5)
+= unused PSK key agreement: offered PSKs are ignored and a full handshake follows; pre_shared_key anywhere but last in the ClientHello gets illegal_parameter (SPEC section 5)
 > - "psk_key_exchange_modes" is REQUIRED for PSK key agreement.
-= unused PSK key agreement: offered PSKs are ignored and a full handshake follows; pre_shared_key without psk_key_exchange_modes gets missing_extension (PLAN section 5)
+= unused PSK key agreement: offered PSKs are ignored and a full handshake follows; pre_shared_key without psk_key_exchange_modes gets missing_extension (SPEC section 5)
 > Such a ClientHello message MUST meet the following requirements:
-= peer client: refused with missing_extension when signature_algorithms or key_share is absent (PLAN section 5); the cases that turn on supported_groups are not settled, see the gap two sentences below
+= peer client: refused with missing_extension when signature_algorithms or key_share is absent (SPEC section 5); the cases that turn on supported_groups are not settled, see the gap two sentences below
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
 > - If not containing a "pre_shared_key" extension, it MUST contain both a "signature_algorithms" extension and a "supported_groups" extension.
-= peer client: without signature_algorithms, refused with missing_extension, with or without pre_shared_key since PSKs are ignored (PLAN section 5); without supported_groups, not settled, see the gap two sentences below
+= peer client: without signature_algorithms, refused with missing_extension, with or without pre_shared_key since PSKs are ignored (SPEC section 5); without supported_groups, not settled, see the gap two sentences below
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
 > - If containing a "supported_groups" extension, it MUST also contain a "key_share" extension, and vice versa.
-= peer client: supported_groups without key_share is refused with missing_extension (PLAN section 5); key_share without supported_groups is not settled, see the gap in the next sentence
+= peer client: supported_groups without key_share is refused with missing_extension (SPEC section 5); key_share without supported_groups is not settled, see the gap in the next sentence
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
 > Servers receiving a ClientHello which does not conform to these requirements MUST abort the handshake with a "missing_extension" alert.
-= code refuse with missing_extension a TLS 1.3 ClientHello, first or second, that lacks signature_algorithms or key_share (PLAN section 5)
+= code refuse with missing_extension a TLS 1.3 ClientHello, first or second, that lacks signature_algorithms or key_share (SPEC section 5)
 = test what_is_refused_and_with_which_alert
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
 = row step retry whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
@@ -1204,10 +1204,10 @@
 = test what_is_refused_and_with_which_alert
 = test refused_hellos_get_the_alert_of_the_plan
 > Additionally, all implementations MUST support the use of the "server_name" extension with applications capable of using it.
-= code parse server_name in the ClientHello and choose the site and its certificate by it (PLAN sections 2 and 5)
+= code parse server_name in the ClientHello and choose the site and its certificate by it (SPEC sections 2 and 5)
 = test both_sites_and_both_key_forms
 > Servers requiring this extension SHOULD respond to a ClientHello lacking a "server_name" extension by terminating the connection with a "missing_extension" alert.
-= code refuse a ClientHello without server_name with missing_extension; unrecognized_name is only for a name we have no certificate for (PLAN section 5)
+= code refuse a ClientHello without server_name with missing_extension; unrecognized_name is only for a name we have no certificate for (SPEC section 5)
 = test refused_hellos_get_the_alert_of_the_plan
 = test what_is_refused_and_with_which_alert
 = row step start whole even strict invalid:missing_extension => closed whole even strict alert:missing_extension
@@ -1226,7 +1226,7 @@
 > In TLS 1.3, a client receiving a CertificateRequest or NewSessionTicket MUST also ignore all unrecognized extensions.
 = peer client: nothing to do; shioko sends neither CertificateRequest nor NewSessionTicket
 > - A middlebox which terminates a TLS connection MUST behave as a compliant TLS server (to the original client), including having a certificate which the client is willing to accept, and also as a compliant TLS client (to the original server), including verifying the original server's certificate.
-= unused TLS-intercepting middlebox (a TLS client towards an original server): shioko is the TLS endpoint for its own names with their real certificates and speaks plain HTTP to its upstreams (HTTPS upstreams are dropped, PLAN section 2), so it has no TLS client side; its duties as a TLS server are what every other entry accounts for
+= unused TLS-intercepting middlebox (a TLS client towards an original server): shioko is the TLS endpoint for its own names with their real certificates and speaks plain HTTP to its upstreams (HTTPS upstreams are dropped, SPEC section 2), so it has no TLS client side; its duties as a TLS server are what every other entry accounts for
 > In particular, it MUST generate its own ClientHello containing only parameters it understands, and it MUST generate a fresh ServerHello random value, rather than forwarding the endpoint's value.
 = unused TLS-intercepting middlebox: shioko sends no ClientHello and has no endpoint ServerHello to forward
 = code fill ServerHello.random with 32 fresh bytes from /dev/urandom in every handshake (HelloRetryRequest carries its fixed value)
@@ -1262,26 +1262,26 @@
 
 @ C.1
 > It is RECOMMENDED to use an existing CSPRNG implementation in preference to crafting a new one.
-= code take every random value (ServerHello.random, X25519 private key, ML-KEM encapsulation randomness, ECDSA nonce) from /dev/urandom with no generator of our own, and fail the handshake when the read fails (PLAN sections 4 and 5)
+= code take every random value (ServerHello.random, X25519 private key, ML-KEM encapsulation randomness, ECDSA nonce) from /dev/urandom with no generator of our own, and fail the handshake when the read fails (SPEC sections 4 and 5)
 = test random_fills_buffer
 = test ecdsa_sign_verifies_and_is_randomised
 = test every_server_random_is_new
 
 @ C.2
 > Applications SHOULD also enforce minimum and maximum key sizes.
-= unused validation of certification paths: shioko validates no certificate (no client certificates); its own key must be P-256 and match the leaf certificate at startup (PLAN section 5)
+= unused validation of certification paths: shioko validates no certificate (no client certificates); its own key must be P-256 and match the leaf certificate at startup (SPEC section 5)
 
 @ C.3
 > It is RECOMMENDED that implementations implement "deterministic ECDSA" as specified in [RFC6979].
-= deviation PLAN section 5, known departures: ECDSA nonces are random, read from /dev/urandom for each signature (section 7), not derived as RFC 6979 recommends; the handshake fails if the read fails
+= deviation SPEC section 5, known departures: ECDSA nonces are random, read from /dev/urandom for each signature (section 7), not derived as RFC 6979 recommends; the handshake fails if the read fails
 
 @ C.4
 > Clients SHOULD NOT reuse a ticket for multiple connections.
 = peer client: nothing to do; shioko issues no tickets
 > Servers that issue tickets SHOULD offer at least as many tickets as the number of connections that a client might use; for example, a web browser using HTTP/1.1 [RFC7230] might open six connections to a server.
-= unused session tickets: none are issued (PLAN section 5); a ticket or PSK identity offered by a client is ignored and a full handshake follows
+= unused session tickets: none are issued (SPEC section 5); a ticket or PSK identity offered by a client is ignored and a full handshake follows
 > Servers SHOULD issue new tickets with every connection.
-= unused session tickets: the advice is for servers that issue tickets, and shioko issues none (PLAN sections 2 and 5), so there is no ticket for a client to reuse
+= unused session tickets: the advice is for servers that issue tickets, and shioko issues none (SPEC sections 2 and 5), so there is no ticket for a client to reuse
 
 @ C.5
 > If no such mechanism is used, then the connection has no protection against active man-in-the-middle attack; applications MUST NOT use TLS in such a way absent explicit configuration or a specific application profile.
@@ -1289,11 +1289,11 @@
 
 @ D
 > The value of TLSPlaintext.legacy_record_version MUST be ignored by all implementations.
-= code do not use TLSPlaintext.legacy_record_version for anything: a ClientHello record marked 0x0301, 0x0302, 0x0303, 0x0304 or any other value is processed alike (PLAN section 5: the version field is ignored)
+= code do not use TLSPlaintext.legacy_record_version for anything: a ClientHello record marked 0x0301, 0x0302, 0x0303, 0x0304 or any other value is processed alike (SPEC section 5: the version field is ignored)
 = test bug_record_version_was_not_ignored
 = test records_are_framed_and_checked
 > In order to maximize interoperability with older endpoints, implementations that negotiate the use of TLS 1.0-1.2 SHOULD set the record layer version number to the negotiated version for the ServerHello and all records thereafter.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer TLS 1.3 is refused with protocol_version (PLAN section 2, change 6)
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer TLS 1.3 is refused with protocol_version (SPEC section 2, change 6)
 = row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
 > For maximum compatibility with previously non-standard behavior and misconfigured deployments, all implementations SHOULD support validation of certification paths based on the expectations in this document, even when handling prior TLS versions' handshakes (see Section 4.4.2.2).
 = unused validation of certification paths, and prior TLS versions: shioko validates no certificate and negotiates no earlier version
@@ -1304,7 +1304,7 @@
 > A client using a ticket for resumption SHOULD initiate the connection using the version that was previously negotiated.
 = peer client: nothing to do; shioko issues no tickets
 > Note that 0-RTT data is not compatible with older servers and SHOULD NOT be sent absent knowledge that the server supports TLS 1.3.
-= peer client: nothing to do; early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= peer client: nothing to do; early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 > If the version chosen by the server is not supported by the client (or is not acceptable), the client MUST abort the handshake with a "protocol_version" alert.
 = peer client: nothing to do; shioko only ever answers with TLS 1.3
 > Multiple connection attempts may be required in order to negotiate a backward-compatible connection; however, this practice is vulnerable to downgrade attacks and is NOT RECOMMENDED.
@@ -1318,14 +1318,14 @@
 = test what_a_client_hello_may_offer
 = row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
 > If the "supported_versions" extension is not present, the server MUST negotiate the minimum of ClientHello.legacy_version and TLS 1.2.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer TLS 1.3 is refused with protocol_version (PLAN section 2, change 6); this is the case of the next entry
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer TLS 1.3 is refused with protocol_version (SPEC section 2, change 6); this is the case of the next entry
 = row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
 > If the "supported_versions" extension is absent and the server only supports versions greater than ClientHello.legacy_version, the server MUST abort the handshake with a "protocol_version" alert.
 = code refuse a ClientHello without supported_versions with protocol_version, whatever its legacy_version
 = test what_is_refused_and_with_which_alert
 = row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
 > Servers will receive various TLS 1.x versions in this field, but its value MUST always be ignored.
-= code do not use TLSPlaintext.legacy_record_version for anything: a ClientHello record marked 0x0301, 0x0302, 0x0303, 0x0304 or any other value is processed alike (PLAN section 5: the version field is ignored)
+= code do not use TLSPlaintext.legacy_record_version for anything: a ClientHello record marked 0x0301, 0x0302, 0x0303, 0x0304 or any other value is processed alike (SPEC section 5: the version field is ignored)
 = test bug_record_version_was_not_ignored
 = test records_are_framed_and_checked
 
@@ -1335,7 +1335,7 @@
 > To avoid a downgrade attack, the client SHOULD NOT disable TLS 1.3, only 0-RTT.
 = peer client: nothing to do
 > To avoid this error condition, multi-server deployments SHOULD ensure a uniform and stable deployment of TLS 1.3 without 0-RTT prior to enabling 0-RTT.
-= unused 0-RTT: never enabled, so there is no rollout to stage; early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: never enabled, so there is no rollout to stage; early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 
 @ D.4
 > Either side can send change_cipher_spec at any time during the handshake, as they must be ignored by the peer, but if the client sends a non-empty session ID, the server MUST send the change_cipher_spec as described in this appendix.
@@ -1348,11 +1348,11 @@
 = test a_hello_retry_request_and_then_the_handshake
 = test same_as_the_spec_on_every_input
 = test what_our_first_records_look_like
-= deviation PLAN section 5, known departures, on the clause that the peer ignores change_cipher_spec: one that arrives between the pieces of a split handshake message is refused with unexpected_message, not dropped (step retry partial even strict plain:ccs => closed whole even strict alert:unexpected_message)
+= deviation SPEC section 5, known departures, on the clause that the peer ignores change_cipher_spec: one that arrives between the pieces of a split handshake message is refused with unexpected_message, not dropped (step retry partial even strict plain:ccs => closed whole even strict alert:unexpected_message)
 
 @ D.5
 > Implementations negotiating the use of older versions of TLS SHOULD prefer forward secret and AEAD cipher suites, when available.
-= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer TLS 1.3 is refused with protocol_version (PLAN section 2, change 6)
+= unused TLS 1.2 and earlier: never negotiated; a ClientHello that does not offer TLS 1.3 is refused with protocol_version (SPEC section 2, change 6)
 > Implementations MUST NOT offer or negotiate RC4 cipher suites for any version of TLS for any reason.
 = code ServerHello.cipher_suite is always 0x1303; RC4 suites in a ClientHello are skipped as unknown
 = test our_hellos_field_by_field
@@ -1393,7 +1393,7 @@
 = test sealed_records_open_with_the_same_keys_and_sequence_only
 = test what_our_first_records_look_like
 > Implementations SHOULD NOT accept any records with a version less than 0x0300 (but may inadvertently do so if the record version number is ignored completely).
-= code ignore legacy_record_version completely, as section 5.1 requires, so that a record below 0x0300 is accepted like any other (which this sentence allows); a ClientHello whose legacy_version is 0x0300 or lower is refused with protocol_version (PLAN section 5)
+= code ignore legacy_record_version completely, as section 5.1 requires, so that a record below 0x0300 is accepted like any other (which this sentence allows); a ClientHello whose legacy_version is 0x0300 or lower is refused with protocol_version (SPEC section 5)
 = test bug_record_version_was_not_ignored
 = row step start whole even strict invalid:protocol_version => closed whole even strict alert:protocol_version
 > Implementations MUST NOT use the Truncated HMAC extension, defined in Section 7 of [RFC6066], as it is not applicable to AEAD algorithms and has been shown to be insecure in some scenarios.
@@ -1422,9 +1422,9 @@
 > Because clients do not know the exact details of server behavior, they MUST NOT send messages in early data which are not safe to have replayed and which they would not be willing to retry across multiple 1-RTT connections.
 = peer client: nothing to do; shioko never accepts early data: its records are skipped, so nothing a client puts in them is delivered, let alone replayed
 > Application protocols MUST NOT use 0-RTT data without a profile that defines its use.
-= unused 0-RTT: early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 > In addition, to avoid accidental misuse, TLS implementations MUST NOT enable 0-RTT (either sending or accepting) unless specifically requested by the application and MUST NOT automatically resend 0-RTT data if it is rejected by the server unless instructed by the application.
-= unused 0-RTT: never enabled in either direction (PLAN sections 2 and 5); early data is never accepted (PLAN section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
+= unused 0-RTT: never enabled in either direction (SPEC sections 2 and 5); early data is never accepted (SPEC section 5): offered PSKs are ignored, a full handshake follows, and early-data records are skipped as RFC 8446 4.2.10 requires, up to 16 KB, after which the connection ends with unexpected_message
 = row step wait_finished whole even skipping undecryptable:- => wait_finished whole even skipping skip:-
 = row step wait_finished whole even skipping invalid:bad_record_mac => closed whole even strict alert:bad_record_mac
 = check Handshake.SkipOnlyEarlyData
