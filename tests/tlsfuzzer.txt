@@ -65,7 +65,7 @@ run test-tls13-legacy-version.py
 run test-tls13-mlkem.py --keep-groups --kems x25519mlkem768
 run test-tls13-multiple-ccs-messages.py
     fail ^(CH and multiple CCS Messages in one TCP packet|multiple CCS Messages in one TCP packet|second CCS before client finished)$ ~ Timeout ~ every ChangeCipherSpec before the client Finished is dropped, as RFC 8446 5 says it MUST be; tlsfuzzer wants a second one refused
-run test-tls13-no-unknown-groups.py --keep-groups --groups x25519
+run test-tls13-no-unknown-groups.py --keep-groups --groups x25519,x25519mlkem768
 run test-tls13-nociphers.py
 run test-tls13-obsolete-curves.py --relaxed -a handshake_failure
     fail ^(x448|secp384r1|secp521r1) in supported_groups and key_share$ ~ handshake_failure ~ profile
