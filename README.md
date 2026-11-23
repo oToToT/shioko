@@ -1,5 +1,7 @@
 # shioko
 
+[![CI](https://github.com/oToToT/Shioko/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/oToToT/Shioko/actions/workflows/ci.yml)
+
 A small TLS 1.3 reverse proxy for the most common nginx setup: a few HTTPS
 sites, each forwarded to one HTTP service on the same host or network. One
 static binary, one configuration file with six keys per site, no
@@ -17,14 +19,16 @@ dependencies at run time.
   `certbot --webroot`, so certificates renew without an nginx plugin.
 - Logs a line per request to journald.
 
-It is written in Rust without `unsafe`, but for the one function that
-wipes secrets, on top of libcrux, a
-formally verified crypto library. The TLS and HTTP state machines and the
-threading are specified in TLA+ and model-checked, and the code is tested
-against those specs (see "Checking it"). The models are checked within
-small bounds and cover the designs only: parsing, the cryptography and the
-operating system (file descriptors, blocking I/O) are checked by tests,
-proofs of small inputs and fuzzing instead, as `SPEC.md` section 10 sets
+It is written in Rust without `unsafe`, but for the function that wipes
+secrets and the two Linux system calls that wait for SIGTERM, on top of
+libcrux, a formally verified crypto library. The TLS and HTTP state
+machines and the threading are specified in TLA+ and model-checked, and
+the code is tested against those specs (see "Checking it"); the real
+threads also run under thousands of schedules (shuttle). The models are
+checked within bounds (small ones in CI, larger ones locally) and cover
+the designs only: parsing, the cryptography and the operating system
+(file descriptors, blocking I/O) are checked by tests, proofs of small
+inputs and coverage-guided fuzzing instead, as `SPEC.md` section 10 sets
 out.
 
 Status: version 0.1, new. It is tested as described below, but has not yet
@@ -106,6 +110,27 @@ hybrid) or X25519, and ECDSA P-256 certificates.
 
 The deployment guide shows how to find out from your nginx logs whether any
 of your clients would be refused, before you switch.
+
+### How fast it is
+
+About as fast as nginx for what such a setup does, a little slower at
+bulk downloads. Every end-to-end run (`tools/e2e.sh`, also in CI) measures
+both, serving the same site from the same upstream, and fails if shioko
+falls too far behind. On an Apple M5, everything in Docker on the same
+machine, with the final code of this version:
+
+| | shioko | nginx |
+|---|---|---|
+| TLS handshake, median / 99th percentile | 0.58 / 0.71 ms | 0.53 / 0.70 ms |
+| request on a kept connection, median / 99th percentile | 0.15 / 0.20 ms | 0.14 / 0.19 ms |
+| 32 connections at once: requests per second | 8,663 | 9,606 |
+| one 50 MB download | 220 MB/s | 460 MB/s |
+
+The download gap is the cipher: nginx uses AES-GCM with the CPU's AES
+instructions, shioko ChaCha20-Poly1305 in portable code. At 220 MB/s that
+is still more than a 1 Gbit/s link carries. shioko uses a thread per
+connection, so it is made for hundreds of connections, not hundreds of
+thousands (see the limits in `SPEC.md`).
 
 ## Getting started
 
