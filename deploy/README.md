@@ -204,9 +204,12 @@ with ACLs, so nothing else about the files changes; run it once for each:
 RENEWED_LINEAGE=/etc/letsencrypt/live/NAME /etc/letsencrypt/renewal-hooks/deploy/shioko
 ```
 
-(It only grants access. After each renewal certbot runs it again, and
-shioko, which reads its certificates again every minute, takes the new
-one up for new connections without a restart.) Then check the
+(It only grants access, and only to the files that
+`/etc/shioko/shioko.conf` names as a `cert` or `key`: certbot runs it for
+every certificate it renews, and one that shioko does not serve, a mail
+server's say, stays closed to it. After each renewal certbot runs it
+again, and shioko, which reads its certificates again every minute, takes
+the new one up for new connections without a restart.) Then check the
 configuration as the `shioko` user would read it:
 
 ```
@@ -341,3 +344,16 @@ The same goes for a changed configuration: `shioko check` first, then
 restart. A restart lets the requests being served finish, for up to 10 s;
 connections waiting for their next request and WebSockets are closed at
 once, and clients reconnect.
+
+The certbot hook is installed again the same way as in section 5. One
+installed before 24 November 2026 let the `shioko` group read every
+certificate certbot renewed, with all the keys in its archive. After
+replacing it, take that access back and grant what is needed, once for
+each certificate the configuration names:
+
+```
+setfacl -R -x g:shioko /etc/letsencrypt/live /etc/letsencrypt/archive
+RENEWED_LINEAGE=/etc/letsencrypt/live/NAME /etc/letsencrypt/renewal-hooks/deploy/shioko
+```
+
+Then check the configuration as the `shioko` user once more.

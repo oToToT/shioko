@@ -1,10 +1,14 @@
 #!/bin/sh
 # certbot deploy hook: runs after every certificate certbot obtains or
 # renews, with RENEWED_LINEAGE set to its directory under
-# /etc/letsencrypt/live. It lets the shioko group read that certificate and
-# key. shioko reads its certificates again every minute and uses changed
-# ones for new connections, so nothing is restarted and no connection is
-# cut.
+# /etc/letsencrypt/live. If shioko's configuration names files of that
+# certificate, it lets the shioko group read them. shioko reads its
+# certificates again every minute and uses changed ones for new
+# connections, so nothing is restarted and no connection is cut.
+#
+# Only what shioko serves is opened to it: a certificate its configuration
+# does not name (a mail server's, say) is left alone, and of one it names,
+# the files as they are now, not the older keys kept in the archive.
 #
 # Access is granted with ACLs, so the owners, groups and modes certbot and
 # other services rely on stay as they are.
@@ -12,9 +16,30 @@
 # Install as /etc/letsencrypt/renewal-hooks/deploy/shioko (mode 0755). To
 # grant access to a certificate that exists already, run it by hand:
 #   RENEWED_LINEAGE=/etc/letsencrypt/live/NAME /etc/letsencrypt/renewal-hooks/deploy/shioko
+# The configuration is /etc/shioko/shioko.conf; SHIOKO_CONFIG names another.
 set -eu
 lineage=${RENEWED_LINEAGE:?certbot sets RENEWED_LINEAGE}
-archive=/etc/letsencrypt/archive/$(basename "$lineage")
-# Pass through the two parent directories, read the certificate's own.
-setfacl -m g:shioko:x /etc/letsencrypt/live /etc/letsencrypt/archive
-setfacl -R -m g:shioko:rX "$lineage" "$archive"
+lineage=${lineage%/}
+config=${SHIOKO_CONFIG:-/etc/shioko/shioko.conf}
+[ -r "$config" ] || exit 0
+
+# The files of this certificate that the configuration names as a site's
+# `cert` or `key`, read as shioko reads them: `#` starts a comment.
+files=$(awk -v lineage="$lineage/" '
+    {
+        sub(/#.*/, "")
+        if ($0 !~ /^[ \t]*(cert|key)[ \t]*=/) next
+        sub(/^[^=]*=[ \t]*/, "")
+        sub(/[ \t]+$/, "")
+        if (index($0, lineage) == 1) print
+    }' "$config")
+[ -n "$files" ] || exit 0
+
+# Pass through the directories on the way, read the files themselves: what
+# the names in `live` lead to in the archive now.
+live=$(dirname "$lineage")
+archive=$(dirname "$live")/archive/$(basename "$lineage")
+setfacl -m g:shioko:x "$live" "$(dirname "$archive")" "$lineage" "$archive"
+printf '%s\n' "$files" | while IFS= read -r file; do
+    setfacl -m g:shioko:r "$(readlink -f "$file")"
+done

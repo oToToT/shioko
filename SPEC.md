@@ -400,8 +400,11 @@ Certificates and keys:
 - Nothing else about the chain is checked: its order, key usage and
   signature algorithms are whatever the certificate file holds.
 - The `shioko` user needs read access to the configured paths. For
-  Let's Encrypt paths that is read access through ACLs on the `live` and
-  `archive` directories, re-asserted by the certbot deploy hook.
+  Let's Encrypt paths that is read access through ACLs, granted anew by
+  the certbot deploy hook after each renewal: to the files the
+  configuration names as a `cert` or `key`, as they are then, and to no
+  other certificate certbot renews on the host, nor to the older keys in
+  the archive.
 
 Known departures from RFC 8446 (each is listed in `spec/rfc/rfc8446.req`):
 

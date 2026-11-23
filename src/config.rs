@@ -321,4 +321,65 @@ pub mod tests {
             assert_eq!(upstream(value), Ok(value.to_string()));
         }
     }
+
+    /// Bug (found in review): the certbot hook (deploy/certbot-deploy-hook)
+    /// let the shioko group read every certificate certbot renewed, with
+    /// all the keys in its archive, whether shioko served it or not: on a
+    /// host that also renews a mail server's certificate, shioko could read
+    /// the mail server's key. It now opens only the files this
+    /// configuration names, as they are at the time.
+    #[test]
+    fn bug_the_certbot_hook_let_shioko_read_keys_it_does_not_serve() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let base = std::env::temp_dir().join(format!("shioko-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // Two certificates as certbot keeps them, each renewed once.
+        for name in ["web.test", "mail.test"] {
+            let (live, archive) = (base.join("live").join(name), base.join("archive").join(name));
+            std::fs::create_dir_all(&live).unwrap();
+            std::fs::create_dir_all(&archive).unwrap();
+            for file in ["fullchain", "privkey"] {
+                std::fs::write(archive.join(format!("{file}1.pem")), "old").unwrap();
+                std::fs::write(archive.join(format!("{file}2.pem")), "new").unwrap();
+                symlink(format!("../../archive/{name}/{file}2.pem"), live.join(format!("{file}.pem"))).unwrap();
+            }
+        }
+        // shioko serves one of them.
+        let conf = base.join("shioko.conf");
+        let live = base.join("live/web.test");
+        let text = format!(
+            "[web.test]\nupstream = a:1\n  cert   =  {0}/fullchain.pem   # the chain\nkey = {0}/privkey.pem\n# key = {1}/privkey.pem\n",
+            live.display(),
+            base.join("live/mail.test").display()
+        );
+        std::fs::write(&conf, text).unwrap();
+        assert!(Config::parse(&std::fs::read_to_string(&conf).unwrap(), &|_| Ok("pem".into())).is_ok());
+        // A setfacl that writes down what it is asked for.
+        let (bin, asked) = (base.join("bin"), base.join("asked"));
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("setfacl"), format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", asked.display())).unwrap();
+        std::fs::set_permissions(bin.join("setfacl"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let hook = Path::new(env!("CARGO_MANIFEST_DIR")).join("deploy/certbot-deploy-hook");
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        for name in ["web.test", "mail.test"] {
+            let status = std::process::Command::new("sh")
+                .arg(&hook)
+                .env("PATH", &path)
+                .env("SHIOKO_CONFIG", &conf)
+                .env("RENEWED_LINEAGE", base.join("live").join(name))
+                .status()
+                .unwrap();
+            assert!(status.success(), "{name}");
+        }
+        let asked = std::fs::read_to_string(&asked).unwrap();
+        let read: Vec<&str> = asked.lines().filter(|line| line.starts_with("-m g:shioko:r ")).collect();
+        assert_eq!(read.len(), 2, "{asked}");
+        assert!(read.iter().any(|line| line.ends_with("/archive/web.test/fullchain2.pem")), "{asked}");
+        assert!(read.iter().any(|line| line.ends_with("/archive/web.test/privkey2.pem")), "{asked}");
+        // Not the mail server's certificate, not the older keys, and
+        // nothing by the directory.
+        assert!(!asked.contains("mail.test") && !asked.contains("1.pem") && !asked.contains("-R"), "{asked}");
+        assert!(asked.lines().all(|line| line.starts_with("-m g:shioko:r ") || line.starts_with("-m g:shioko:x ")), "{asked}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }
