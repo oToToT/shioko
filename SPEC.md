@@ -225,8 +225,8 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
 | A write to a client (a TLS record or a body piece, at most 16 KB) | 60 s in all |
 | Client keep-alive idle | 75 s |
 | Upstream connect timeout | 5 s |
-| Upstream read / write idle | 60 s |
-| Tunnel idle (no bytes either way) | 60 s |
+| Upstream read / write idle | 60 s between two reads or writes (no pace on a response) |
+| Tunnel idle (no bytes either way) | 60 s (no pace) |
 | Request body | 1M default, per site |
 | Requests being served when told to stop | 10 s to finish |
 
@@ -328,7 +328,12 @@ Handshake behaviour:
 - No NewSessionTicket is ever sent, so there is no resumption.
 - Our handshake messages are split into records of at most 2^14 bytes. A
   handshake message from the client may be split over several records, but
-  nothing may come between the pieces and each message must end its record.
+  nothing may come between the pieces and each message must end its record,
+  so two messages in one record get `unexpected_message`. That is RFC 8446
+  section 5.1, not a restriction of ours: every message a client may send
+  us (ClientHello, Finished, KeyUpdate) "can immediately precede a key
+  change", and the receiver MUST check that such a message ends at a
+  record boundary, and answer `unexpected_message` if not.
 - A handshake message from the client may be as long as the longest
   ClientHello there can be, 131,396 bytes; a longer one gets `decode_error`.
 - An unencrypted alert after our ServerHello and before the client Finished
@@ -435,7 +440,18 @@ Requests:
   a piece of a body of at most 16 KB, must be done within 60 seconds in
   all (Linux bounds a write call so; the BSDs would not), so a client must
   read about 270 bytes a second while there is something to read. A quiet
-  upstream asks nothing of the client.
+  upstream asks nothing of the client. In a tunnel, our answer to the
+  client's close_notify or KeyUpdate waits for the write lock, so for a
+  client that has stopped reading it waits out that write, up to the same
+  60 seconds.
+- **Responses and tunnels keep no pace**, by design: server-sent events,
+  long polls and WebSockets are quiet for long stretches, a few bytes of
+  heartbeat at a time, and a pace would cut them. An upstream may take up
+  to 60 seconds between two reads, as in nginx (`proxy_read_timeout`), so
+  an upstream that sends a byte now and then holds its connection as long
+  as it does so. Upstreams are the operator's own services; a client can
+  hold a connection this way only on an endpoint built to be slow, as it
+  can with a WebSocket.
 - **Strict head parsing.** Rejected with 400: both `Content-Length` and
   `Transfer-Encoding`, repeated or non-numeric `Content-Length`, a malformed
   `Transfer-Encoding` or one that does not end in `chunked`,

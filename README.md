@@ -159,7 +159,7 @@ hostname:
 
 | Key | Meaning | If omitted |
 |---|---|---|
-| `upstream` | `host:port` of the HTTP/1.1 server the site is forwarded to | required |
+| `upstream` | `host:port` of the HTTP/1.1 server the site is forwarded to. A name is looked up again for each request, with the system's resolver (`/etc/hosts`, then DNS) and without a cache; the 5 s connect timeout starts after the lookup, which has the resolver's own timeouts (`/etc/resolv.conf`). An address, or a name in `/etc/hosts`, avoids waiting on DNS. | required |
 | `cert` | PEM certificate chain; the site is served over HTTPS and port 80 redirects to it | the site is plain HTTP |
 | `key` | PEM private key (ECDSA P-256), required with `cert` | |
 | `websocket` | `yes` lets WebSocket upgrades through | upgrade headers are removed |
@@ -184,7 +184,9 @@ open-file limit is below 2064); 5 s to connect to an upstream (nginx waits
 in nginx, 60 s of silence from an upstream or on a WebSocket, and 75 s for
 an idle keep-alive connection; a request body must keep up 64 KiB a
 minute, and a client must take each piece we write (at most 16 KB) within
-60 s, so slow clients cannot hold connections for free. A name that only needs a
+60 s, so slow clients cannot hold connections for free. Responses and
+WebSockets keep no pace, so that server-sent events and quiet WebSockets
+work. A name that only needs a
 certificate, a mail server's for instance, needs no section. An unknown
 hostname gets a 404 or, over TLS, an `unrecognized_name` alert.
 
