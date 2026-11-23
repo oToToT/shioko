@@ -146,6 +146,33 @@ fn read_identity_files(site: &crate::config::Site) -> Files {
     Some((std::fs::read(cert).ok()?, std::fs::read(key).ok()?))
 }
 
+/// The work of the thread that stops the server, given what waiting for
+/// SIGTERM or SIGINT gave (`signals::wait`): on a signal, let nobody in
+/// any more, cut the connections that wait for a request and the tunnels,
+/// let the requests being served finish (for up to DRAIN_TIMEOUT), and
+/// exit. If waiting failed, say so and stay: the signals are let through
+/// to this thread alone, and it must live on for them to end the process.
+pub fn stop_on(server: &Server, signal: Result<u32, String>) -> ! {
+    let signal = match signal {
+        Ok(signal) => signal,
+        Err(why) => {
+            server.log.error(&format!("no graceful stop: {why}"));
+            loop {
+                std::thread::park();
+            }
+        }
+    };
+    server.log.error(&format!(
+        "stopping on signal {signal}: letting nobody in, waiting up to {} s for the requests being served",
+        DRAIN_TIMEOUT.as_secs()
+    ));
+    match server.drain(DRAIN_TIMEOUT) {
+        0 => server.log.error("stopped"),
+        left => server.log.error(&format!("stopped, cutting {left} connections")),
+    }
+    std::process::exit(0);
+}
+
 /// Reads the certificates and keys again every `RELOAD_INTERVAL`, for ever.
 pub fn watch(server: &Server) {
     loop {
@@ -709,6 +736,23 @@ mod tests {
         assert!(read_to_end(&fifth).ends_with("\r\n\r\nok"));
         drop((second, third));
         wait_until(|| server.used() == 1);
+    }
+
+    /// When waiting for signals fails, the stopping thread says so and
+    /// stays, the one thread the signals are let through to; the server
+    /// goes on serving.
+    #[test]
+    fn a_stop_that_cannot_wait_for_signals_says_so_and_stays() {
+        let log = Arc::new(Kept::default());
+        let config = parse("[wiki.test]\nupstream = a:1\n").unwrap();
+        let server = Server::new(config, vec![None], "/nonexistent".into(), Box::new(Shared(Arc::clone(&log))), 3, 2);
+        let stopping = Arc::clone(&server);
+        let thread = std::thread::spawn(move || stop_on(&stopping, Err("waiting fails with error 1".into())));
+        let said = || log.0.lock().unwrap().iter().any(|l| l == "error: no graceful stop: waiting fails with error 1");
+        wait_until(said);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!thread.is_finished(), "the thread that lets the signals through ended");
+        assert!(!server.stopping.load(Ordering::SeqCst), "the server stopped");
     }
 
     /// The pools of the two kinds of peer are apart: a flood from outside

@@ -110,9 +110,14 @@ pub fn start() -> Result<(), String> {
 /// them through.
 pub fn wait() -> Result<u32, String> {
     match EARLY.swap(0, Ordering::SeqCst) {
-        0 => {}
-        signal => return Ok(signal),
+        0 => wait_with(&take, &|| mask(SIG_UNBLOCK)),
+        signal => Ok(signal),
     }
+}
+
+/// `wait`, with the calls that take a signal and that let the signals
+/// through given, so that the tests can make them fail.
+fn wait_with(take: &dyn Fn(bool) -> isize, let_through: &dyn Fn() -> bool) -> Result<u32, String> {
     loop {
         match taken(take(true)) {
             Taken::Signal(signal) => return Ok(signal),
@@ -120,7 +125,7 @@ pub fn wait() -> Result<u32, String> {
             // rt_sigprocmask fails only on a bad pointer or a bad argument
             // (EFAULT, EINVAL), and gets neither here; were it to fail all
             // the same, the signals would stay blocked everywhere.
-            Taken::Failed(error) if mask(SIG_UNBLOCK) => {
+            Taken::Failed(error) if let_through() => {
                 return Err(format!("waiting for a signal fails with error {error}: SIGTERM and SIGINT now end the server at once"));
             }
             Taken::Failed(error) => {
@@ -217,6 +222,45 @@ mod tests {
             assert_eq!(start(), Ok(()));
             assert_eq!(EARLY.load(Ordering::SeqCst), SIGTERM, "the pending SIGTERM was taken and dropped");
             assert_eq!(wait(), Ok(SIGTERM));
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// This thread's mask.
+    fn blocked() -> u64 {
+        let mut mask: u64 = 0;
+        // SAFETY: with no new set (null) rt_sigprocmask changes nothing; it
+        // writes this thread's mask to the 8 bytes at `&mut mask`, which
+        // live across the call.
+        let result = unsafe { syscall4(RT_SIGPROCMASK, SIG_BLOCK, 0, std::ptr::from_mut(&mut mask) as usize, SET_SIZE) };
+        assert_eq!(result, 0);
+        mask
+    }
+
+    /// Waiting goes on past interruptions and returns the signal; when it
+    /// fails for good it lets the signals through and says so, or says
+    /// that it could not.
+    #[test]
+    fn a_wait_that_fails_says_what_became_of_the_signals() {
+        let results = std::cell::RefCell::new(vec![15, -11, -4]);
+        let next = |_| results.borrow_mut().pop().unwrap();
+        assert_eq!(wait_with(&next, &|| unreachable!()), Ok(SIGTERM));
+        let through = wait_with(&|_| -1, &|| true).unwrap_err();
+        assert!(through.contains("error 1") && through.contains("now end the server at once"), "{through}");
+        let blocked = wait_with(&|_| -1, &|| false).unwrap_err();
+        assert!(blocked.contains("only SIGKILL stops the server"), "{blocked}");
+    }
+
+    /// The real letting through: after a failed wait, the waiting thread
+    /// blocks the two signals no more, so the next one ends the process.
+    #[test]
+    fn a_failed_wait_lets_the_signals_through() {
+        std::thread::spawn(|| {
+            assert!(mask(SIG_BLOCK));
+            assert_eq!(blocked() & SET, SET);
+            assert!(wait_with(&|_| -1, &|| mask(SIG_UNBLOCK)).is_err());
+            assert_eq!(blocked() & SET, 0);
         })
         .join()
         .unwrap();
