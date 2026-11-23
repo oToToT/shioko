@@ -159,7 +159,7 @@ hostname:
 
 | Key | Meaning | If omitted |
 |---|---|---|
-| `upstream` | `host:port` of the HTTP/1.1 server the site is forwarded to. A name is looked up again for each request, with the system's resolver (`/etc/hosts`, then DNS) and without a cache; the 5 s connect timeout starts after the lookup, which has the resolver's own timeouts (`/etc/resolv.conf`). An address, or a name in `/etc/hosts`, avoids waiting on DNS. | required |
+| `upstream` | `host:port` of the HTTP/1.1 server the site is forwarded to. A name is looked up again for each request, with the system's resolver (`/etc/hosts`, then DNS) and without a cache; the lookup has the resolver's own timeouts (`/etc/resolv.conf`), and the 5 s connect timeout starts after it, for each address the name gives. An address, or a name in `/etc/hosts`, avoids waiting on DNS. | required |
 | `cert` | PEM certificate chain; the site is served over HTTPS and port 80 redirects to it | the site is plain HTTP |
 | `key` | PEM private key (ECDSA P-256), required with `cert` | |
 | `websocket` | `yes` lets WebSocket upgrades through | upgrade headers are removed |

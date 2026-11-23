@@ -224,7 +224,7 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
 | Request body pace | each 64 KiB within 60 s (about 1 KB/s) |
 | A write to a client (a TLS record or a body piece, at most 16 KB) | 60 s in all |
 | Client keep-alive idle | 75 s |
-| Upstream connect timeout | 5 s |
+| Upstream connect timeout | 5 s for each address its name gives, after the lookup |
 | Upstream read / write idle | 60 s between two reads or writes (no pace on a response) |
 | Tunnel idle (no bytes either way) | 60 s (no pace) |
 | Request body | 1M default, per site |
@@ -493,6 +493,14 @@ What the upstream receives:
 
 - One new connection per request. There is no upstream connection reuse, so
   one request cannot contaminate another.
+- The `upstream` name is looked up for each connection, with the system's
+  resolver (`getaddrinfo`: `/etc/hosts`, then DNS) and without a cache, so
+  a changed address is followed at once. The lookup has the resolver's own
+  timeouts (`/etc/resolv.conf`), and the thread waits for it: the connect
+  timeout covers only what comes after, 5 s for each address the name
+  gives, in the resolver's order. A lookup that fails gets the client 502;
+  addresses that all time out, 504. An address, or a name in `/etc/hosts`,
+  needs no DNS.
 - The head is written by us, never copied: the request line with the target
   as received, then the client's fields without the hop-by-hop ones
   (`Connection` and whatever it names, `Keep-Alive`, `Proxy-Connection`, `TE`,
