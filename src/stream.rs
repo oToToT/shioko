@@ -76,20 +76,25 @@ impl Stream for TcpStream {
         // Closing a socket that still has unread input makes the kernel
         // reset the connection, which can destroy our last response before
         // the peer has read it. So close our side only, and read what is
-        // left for a short while.
+        // left for a short while: `LINGER` in all, however the input comes.
         let _ = TcpStream::shutdown(self, Shutdown::Write);
-        Stream::set_read_timeout(self, LINGER);
+        let deadline = Instant::now() + LINGER;
         let mut scratch = [0u8; 1024];
         let mut left = LINGER_BYTES;
-        while left > 0
-            && let Ok(n @ 1..) = Stream::read(self, &mut scratch)
-        {
+        while left > 0 {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            if wait.is_zero() {
+                break;
+            }
+            Stream::set_read_timeout(self, wait);
+            let Ok(n @ 1..) = Stream::read(self, &mut scratch) else { break };
             left = left.saturating_sub(n);
         }
         Stream::shutdown(self);
     }
 }
 
+/// How long, at most, a connection we close reads what its peer still sends.
 const LINGER: Duration = Duration::from_secs(1);
 const LINGER_BYTES: usize = 64 * 1024;
 
@@ -641,5 +646,31 @@ mod tests {
             assert_eq!(buffer.line(&script, 200).unwrap().len(), 98);
             assert!(buffer.data.len() <= 100 + READ_SIZE, "the buffer holds {} bytes", buffer.data.len());
         }
+    }
+
+    /// Bug (found in review): closing a connection read what the peer still
+    /// sent with a timeout of a second for each read, up to 64 KiB, so a
+    /// peer sending a byte now and then held the connection, and its
+    /// thread, for hours. Reading now ends a second after the close,
+    /// however the bytes come.
+    #[test]
+    fn bug_a_closing_peer_that_kept_trickling_held_the_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (ours, _) = listener.accept().unwrap();
+        // A byte every 200 ms for four seconds, then the end.
+        let trickling = std::thread::spawn(move || {
+            for _ in 0..20 {
+                if Stream::write_all(&peer, b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let started = Instant::now();
+        ours.finish();
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(2_500), "closing took {took:?}");
+        trickling.join().unwrap();
     }
 }

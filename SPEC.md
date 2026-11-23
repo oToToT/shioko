@@ -224,6 +224,7 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
 | Request body pace | each 64 KiB within 60 s (about 1 KB/s) |
 | A write to a client (a TLS record or a body piece, at most 16 KB) | 60 s in all |
 | Client keep-alive idle | 75 s |
+| Reading what a client still sends after our last response, before closing | 1 s in all, 64 KiB at most |
 | Upstream connect timeout | 5 s for each address its name gives, after the lookup |
 | Upstream read / write idle | 60 s between two reads or writes (no pace on a response) |
 | Tunnel idle (no bytes either way) | 60 s (no pace) |
