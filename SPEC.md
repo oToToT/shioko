@@ -185,8 +185,10 @@ wildcard hostnames, Unix-socket or HTTPS upstreams, several upstreams.
   says how many were, at most once a minute. Slots are released by an RAII
   guard on every exit path, including panics.
 - The pools are lowered at startup if the open-file limit cannot hold them:
-  a connection holds up to two descriptors, and 16 are kept for the rest
-  (so two pools of 512 need a limit of 2064; the unit sets 4096).
+  a connection holds up to three descriptors (its client's socket, the
+  duplicate through which a stop cuts it, its upstream's socket), and 16
+  are kept for the rest (so two pools of 512 need a limit of 3088; the
+  unit sets 4096).
 - `/dev/urandom` is opened once, at startup, and kept open.
 - A watcher thread reads the certificate and key files again every minute
   (section 5).

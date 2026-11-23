@@ -179,7 +179,7 @@ most 512 connections from addresses inside some site's allowlist and 512
 from everyone else, at most 64 of these from one address (an IPv6 /64),
 the rest closed at once, so a flood from outside cannot take the slots of
 allowlisted sites (fewer than 512, with a warning at startup, if the
-open-file limit is below 2064); 5 s to connect to an upstream (nginx waits
+open-file limit is below 3088); 5 s to connect to an upstream (nginx waits
 60 s); as
 in nginx, 60 s of silence from an upstream or on a WebSocket, and 75 s for
 an idle keep-alive connection; a request body must keep up 64 KiB a

@@ -30,21 +30,26 @@ pub const PER_ADDRESS: usize = 64;
 /// certificate or token file being read.
 pub const RESERVED_FILES: usize = 16;
 
+/// The file descriptors a connection holds at most: its client's socket, the
+/// duplicate of it through which a stop cuts the connection, and its
+/// upstream's socket (or, in its place, a token file being read).
+pub const FILES_PER_CONNECTION: usize = 3;
+
 /// The cap of each pool that fits the open-file limit, given the text of
 /// /proc/self/limits: the two pools together may hold twice the cap of
-/// connections, and a connection holds up to two descriptors, its client's
-/// and its upstream's. With no limit to read, or none set, `CONNECTIONS`.
+/// connections, each with `FILES_PER_CONNECTION` descriptors. With no limit
+/// to read, or none set, `CONNECTIONS`.
 pub fn cap_for(limits: &str) -> usize {
     let soft = limits
         .lines()
         .find_map(|line| line.strip_prefix("Max open files"))
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|value| value.parse::<usize>().ok());
-    soft.map_or(CONNECTIONS, |files| (files.saturating_sub(RESERVED_FILES) / 4).clamp(1, CONNECTIONS))
+    soft.map_or(CONNECTIONS, |files| (files.saturating_sub(RESERVED_FILES) / (2 * FILES_PER_CONNECTION)).clamp(1, CONNECTIONS))
 }
 
 /// The open-file limit that `CONNECTIONS` in each pool needs.
-pub const FILES_NEEDED: usize = 4 * CONNECTIONS + RESERVED_FILES;
+pub const FILES_NEEDED: usize = 2 * FILES_PER_CONNECTION * CONNECTIONS + RESERVED_FILES;
 /// How long a write to a client may block.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long an accept loop rests after `accept` failed.
@@ -530,13 +535,31 @@ mod tests {
             )
         };
         let cap = cap_for(&limits("1024"));
-        assert!(4 * cap + RESERVED_FILES <= 1024, "two pools of {cap} connections do not fit 1024 descriptors");
-        assert_eq!(cap, 252);
+        assert!(cap < CONNECTIONS, "two pools of {cap} connections do not fit 1024 descriptors");
         assert_eq!(cap_for(&limits(&FILES_NEEDED.to_string())), CONNECTIONS);
         assert_eq!(cap_for(&limits("4096")), CONNECTIONS);
         assert_eq!(cap_for(&limits("unlimited")), CONNECTIONS);
         assert_eq!(cap_for(&limits("10")), 1);
         assert_eq!(cap_for(""), CONNECTIONS, "no /proc, as on macOS");
+    }
+
+    /// Bug (found in review): the cap counted two descriptors for a
+    /// connection, its client's and its upstream's, but a connection also
+    /// keeps a duplicate of its client's socket, through which a stop cuts
+    /// it: three. Under a limit lower than the unit's, two full pools of
+    /// proxied connections ran out of descriptors before the cap was
+    /// reached.
+    #[test]
+    fn bug_a_connection_was_counted_as_two_descriptors_but_holds_three() {
+        let limits = |soft: usize| format!("Max open files            {soft:<20} 524288               files     \n");
+        for soft in [64, 256, 1024, 2064, 3000, 3088, 4096, 65536] {
+            let cap = cap_for(&limits(soft));
+            assert!(2 * cap * 3 + RESERVED_FILES <= soft, "two pools of {cap} connections, three descriptors each, do not fit {soft}");
+        }
+        assert_eq!(cap_for(&limits(1024)), 168);
+        // What the unit sets holds two full pools.
+        assert_eq!(FILES_NEEDED, 3088);
+        assert_eq!(cap_for(&limits(4096)), CONNECTIONS);
     }
 
     /// A log the test can read after the server has taken it.
