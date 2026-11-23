@@ -1333,6 +1333,32 @@ fn acme_tokens_are_served_from_the_directory_for_any_host() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
+/// Bug (found in review): a token was read through whatever its name led
+/// to, so a symbolic link put among the tokens gave out the file behind it:
+/// any small file shioko can read, a site's private key for one. Only who
+/// can write to the directory could do that, which is root alone as
+/// deployed; a link is not followed now all the same.
+#[test]
+fn bug_a_symbolic_link_among_the_tokens_gave_out_the_file_behind_it() {
+    let base = std::env::temp_dir().join(format!("shioko-acme-link-{}", std::process::id()));
+    let tokens = base.join("tokens");
+    std::fs::create_dir_all(&tokens).unwrap();
+    std::fs::write(base.join("privkey.pem"), "the private key").unwrap();
+    std::fs::write(tokens.join("token"), "a token").unwrap();
+    std::os::unix::fs::symlink(base.join("privkey.pem"), tokens.join("link")).unwrap();
+    std::os::unix::fs::symlink("token", tokens.join("link-to-token")).unwrap();
+    assert!(std::process::Command::new("mkfifo").arg(tokens.join("fifo")).status().unwrap().success());
+    let talk = Talk { acme: tokens, ..Talk::default() };
+    let get = |name: &str| talk.go(&format!("GET /.well-known/acme-challenge/{name} HTTP/1.1\r\nHost: x.test\r\n\r\n"), &[]).0;
+    assert!(get("token").ends_with("\r\n\r\na token"));
+    for name in ["link", "link-to-token", "fifo"] {
+        let received = get(name);
+        assert!(received.starts_with("HTTP/1.1 404 "), "{name}: {received:?}");
+        assert!(!received.contains("private key") && !received.contains("a token"), "{name}: {received:?}");
+    }
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
 #[test]
 fn on_a_tls_connection_the_host_must_be_the_site_of_the_handshake() {
     let talk = Talk { tls: Some("site.test"), ..Talk::default() };

@@ -546,7 +546,10 @@ HTTP listeners, in order:
    1–128 characters of `[A-Za-z0-9_-]`, returns that file from the ACME
    directory (above), for any hostname, with `Date`, `Content-Type:
    application/octet-stream`, `Content-Length` and `Connection: close`.
-   Conditional and range headers are ignored.
+   Conditional and range headers are ignored. Only a regular file of at
+   most 4 KB in the directory itself is served, 404 otherwise: a symbolic
+   link there is not followed, so that a link to a file shioko can read (a
+   private key) gives nothing out. The directory is for root to write to.
 2. A request for a site with a `cert` returns 301 to `https://` followed by
    the site's configured name and the request target, with every character
    a URI may not hold percent-encoded, so the location is always a valid

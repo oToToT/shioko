@@ -57,6 +57,15 @@ const LOOP_LIMIT: usize = 8;
 const ACME_PREFIX: &[u8] = b"/.well-known/acme-challenge/";
 /// The largest ACME token file we serve.
 const TOKEN_LIMIT: u64 = 4096;
+/// How a token file is opened: a symbolic link as the last part of its path
+/// is not followed (O_NOFOLLOW), and nothing is waited for (O_NONBLOCK: a
+/// FIFO would wait for its writer). The values are each kernel's.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const TOKEN_FLAGS: i32 = 0o400000 | 0o4000;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const TOKEN_FLAGS: i32 = 0o100000 | 0o4000;
+#[cfg(target_os = "macos")]
+const TOKEN_FLAGS: i32 = 0x0100 | 0x0004;
 
 /// Opens connections to upstreams.
 pub trait Connect: Sync {
@@ -230,6 +239,30 @@ pub fn serve<'a, C: Stream, K: Connect>(client: &C, context: &Context<'a, K>) {
     }
 }
 
+/// Reads the file of an ACME token: a regular file of at most `TOKEN_LIMIT`
+/// bytes, in the directory itself. A symbolic link there is not followed,
+/// whatever it leads to: the directory is for certbot to write to, and a
+/// file shioko can read, a private key for one, must not be given out
+/// because a link to it was put there.
+fn read_token(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Nothing but a regular file is opened at all.
+    if !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(TOKEN_FLAGS).open(path).ok()?;
+    // What was opened is looked at, not the name again: the name may have
+    // been given to something else meanwhile.
+    let opened = file.metadata().ok()?;
+    if !opened.is_file() || opened.len() > TOKEN_LIMIT {
+        return None;
+    }
+    let mut token = Vec::new();
+    file.take(TOKEN_LIMIT.saturating_add(1)).read_to_end(&mut token).ok()?;
+    (u64::try_from(token.len()).ok()? <= TOKEN_LIMIT).then_some(token)
+}
+
 /// The token of an ACME challenge request, if this is one.
 fn acme_token(request: &Request) -> Option<&[u8]> {
     let token = request.target.strip_prefix(ACME_PREFIX)?;
@@ -319,9 +352,7 @@ fn judge<'a, K: Connect>(
         None => {
             if let Some(token) = acme_token(request) {
                 let path = context.acme.join(String::from_utf8_lossy(token).as_ref());
-                let small = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= TOKEN_LIMIT);
-                let token = small.then(|| std::fs::read(&path).ok()).flatten().ok_or(404u16)?;
-                exchange.content = Content::Token(token);
+                exchange.content = Content::Token(read_token(&path).ok_or(404u16)?);
                 return Err(200);
             }
             let site = context.config.site(name).ok_or(404u16)?;
