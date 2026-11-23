@@ -2038,6 +2038,26 @@ fn bug_a_body_trickling_in_held_its_connection() {
     assert!(received.starts_with("HTTP/1.1 200 "), "{received:?}");
 }
 
+/// Bug (found in review): a read that brought more than the rest of a step
+/// counted only up to the step, and what it brought beyond was dropped, so
+/// the next step needed a whole step more: stricter than the pace says.
+#[test]
+fn bug_bytes_beyond_a_step_did_not_count_towards_the_next() {
+    use std::time::Duration;
+    let timeouts = Timeouts { body: Duration::from_millis(150), body_step: 2, ..Timeouts::STANDARD };
+    let talk = Talk { timeouts, ..Talk::default() };
+    let head = format!("POST /up HTTP/1.1\r\nHost: site.test\r\nContent-Length: {MAX_BODY}\r\n\r\n");
+    assert_eq!(MAX_BODY, 6);
+    // Three bytes at once (a step and one towards the next), then a byte
+    // every 100 ms: the second step is complete at 100 ms, within the
+    // window, and the third at 300 ms, where the body is whole.
+    let mut steps = vec![Step::Data(head.into_bytes()), Step::Data(b"xxx".to_vec())];
+    steps.extend((0..3).map(|_| Step::Slow(Duration::from_millis(100), b"x".to_vec())));
+    let (received, sent, _) = talk.steps(steps, vec![vec![Step::Data(PLAIN_OK.as_bytes().to_vec())]]);
+    assert!(sent[0].ends_with(&"x".repeat(MAX_BODY)), "{:?}", sent[0]);
+    assert!(received.starts_with("HTTP/1.1 200 "), "{received:?}");
+}
+
 /// Bug: an upstream at 0.0.0.0 port 80 was allowed, which on Linux is this
 /// host, and every request would have come back to shioko.
 #[test]

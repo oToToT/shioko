@@ -152,12 +152,13 @@ impl Buffer {
 
     /// Counts bytes taken out against the pace, if one is kept. A step
     /// complete in time moves the deadline on; one complete only after the
-    /// deadline does not, so the next read fails.
+    /// deadline does not, so the next read fails. What a read brings beyond
+    /// a step counts towards the next.
     fn taken(&mut self, n: usize) {
         if let Some(pace) = &mut self.pace {
             pace.taken = pace.taken.saturating_add(n);
             if pace.taken >= pace.step {
-                pace.taken = 0;
+                pace.taken = pace.taken.checked_rem(pace.step).unwrap_or(0);
                 let now = Instant::now();
                 if self.deadline.is_none_or(|deadline| now <= deadline) {
                     self.deadline = Some(now + pace.window);
