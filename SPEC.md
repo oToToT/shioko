@@ -88,7 +88,7 @@ max-body  = 525M
 | `cert` | Path to the PEM certificate chain. The site is served over HTTPS and plain HTTP gets a 301. | The site is served over plain HTTP, no TLS |
 | `key` | Path to the PEM private key | required with `cert`, an error without it |
 | `websocket` | `yes` lets WebSocket upgrades through | `no`: upgrade headers are stripped |
-| `allow` | Who may connect: IP ranges, and/or paths to files with one range per line | everyone |
+| `allow` | Who may connect: IP ranges, and/or paths to files with one range per line. A range is for the clients of the family it is written in, as in nginx with its `deny all`: an IPv6 range lets no IPv4 client in, neither `::/0` nor one of IPv4-mapped addresses (`::ffff:a.b.c.d/N`), which lets nobody in | everyone |
 | `max-body` | Largest request body, e.g. `525M` | `1M` |
 
 Syntax: `[hostname]` headers, `key = value` lines, `#` comments, blank lines.

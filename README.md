@@ -163,7 +163,7 @@ hostname:
 | `cert` | PEM certificate chain; the site is served over HTTPS and port 80 redirects to it | the site is plain HTTP |
 | `key` | PEM private key (ECDSA P-256), required with `cert` | |
 | `websocket` | `yes` lets WebSocket upgrades through | upgrade headers are removed |
-| `allow` | address ranges, and files with one range per line, that may connect | everyone |
+| `allow` | address ranges, and files with one range per line, that may connect. An IPv4 range lets in IPv4 clients and an IPv6 range IPv6 clients, as in nginx: `::/0` is every IPv6 client and no IPv4 one, and a range of IPv4-mapped addresses (`::ffff:…`) lets nobody in | everyone |
 | `max-body` | largest request body, in bytes or with `K`, `M` or `G`, such as `525M`; unlike nginx's, `0` allows no body | `1M`, as in nginx |
 
 `#` starts a comment, to the end of its line. `shioko check` validates the

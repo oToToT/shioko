@@ -112,7 +112,7 @@ one section per `server_name` that serves something into
 | an `upstream` block with one `server HOST:PORT` | `upstream = HOST:PORT` |
 | `ssl_certificate` / `ssl_certificate_key` | `cert` / `key` (the same paths) |
 | `proxy_set_header Upgrade $http_upgrade` and `Connection "upgrade"` | `websocket = yes` |
-| `allow RANGE; ... deny all;` | `allow = RANGE ...` or `allow = /etc/shioko/FILE` |
+| `allow RANGE; ... deny all;` | `allow = RANGE ...` or `allow = /etc/shioko/FILE`. Ranges mean what they mean in nginx: an IPv4 client is matched against IPv4 ranges only. Look through the list for IPv6 ranges meant for IPv4 clients before copying it, `::ffff:…` (IPv4-mapped) above all: they let no IPv4 client in, there or here, so write the IPv4 range if that is what is meant |
 | `client_max_body_size 525m` | `max-body = 525M` (units `K`, `M`, `G` in capitals; the default is 1M, as in nginx) |
 | `client_max_body_size 0` (no limit) | a large size, such as `max-body = 100G`: in shioko `0` allows no body |
 | the port 80 server that redirects to HTTPS | nothing: every TLS site redirects |
