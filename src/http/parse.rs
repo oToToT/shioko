@@ -398,12 +398,17 @@ pub fn read_response(buffer: &mut Buffer, stream: &impl Stream) -> Result<Respon
 }
 
 // Proofs, checked by Kani (tools/prove.sh): each holds for every input up
-// to the stated length.
+// to the stated length, which `tools/prove.sh big` (feature kani-big)
+// doubles or more; an unwind bound is the length plus two.
 #[cfg(kani)]
 mod proofs {
     use super::*;
 
-    const N: usize = 12;
+    const N: usize = if cfg!(feature = "kani-big") { 24 } else { 12 };
+    const STATUS: usize = if cfg!(feature = "kani-big") { 24 } else { 14 };
+    /// Every length of a u64 in decimal, in the larger bounds.
+    const DIGITS: usize = if cfg!(feature = "kani-big") { 20 } else { 4 };
+    const CHUNK: usize = if cfg!(feature = "kani-big") { 26 } else { 18 };
 
     fn any_bytes<const L: usize>() -> ([u8; L], usize) {
         let bytes: [u8; L] = kani::any();
@@ -416,7 +421,8 @@ mod proofs {
     /// token for a method and a target that is in origin form or `*`, free
     /// of spaces and control characters. And nothing panics.
     #[kani::proof]
-    #[kani::unwind(14)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(14))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(26))]
     fn request_line_is_sound() {
         let (bytes, len) = any_bytes::<N>();
         if let Ok(parsed) = request_line(&bytes[..len]) {
@@ -430,7 +436,8 @@ mod proofs {
     /// A field line that is accepted has a token for a name, the colon
     /// directly after it, and no control character in its value.
     #[kani::proof]
-    #[kani::unwind(14)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(14))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(26))]
     fn field_line_is_sound() {
         let (bytes, len) = any_bytes::<N>();
         if let Some((name, value)) = field_line(&bytes[..len]) {
@@ -443,38 +450,45 @@ mod proofs {
 
     /// A status line that is accepted has a status from 100 to 599.
     #[kani::proof]
-    #[kani::unwind(16)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(16))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(26))]
     fn status_line_is_sound() {
-        let (bytes, len) = any_bytes::<14>();
+        let (bytes, len) = any_bytes::<STATUS>();
         if let Some(parsed) = status_line(&bytes[..len]) {
             assert!((100..=599).contains(&parsed.status));
             assert!(bytes[8] == b' ');
         }
     }
 
-    /// Only digits make a decimal number, and its value is right.
+    /// Only digits make a decimal number, and its value is right; with the
+    /// larger bounds, up to 20 digits, a number is refused exactly when it
+    /// does not fit a u64.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(6))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(22))]
     fn decimal_is_exact() {
-        let (bytes, len) = any_bytes::<4>();
+        let (bytes, len) = any_bytes::<DIGITS>();
         let digits = &bytes[..len];
+        let all_digits = digits.iter().all(u8::is_ascii_digit);
+        // At most 20 digits: below 10^20, well within a u128.
+        let value = || digits.iter().fold(0u128, |n, d| n * 10 + u128::from(d - b'0'));
         match decimal(digits) {
             Some(number) => {
-                assert!(len > 0 && digits.iter().all(u8::is_ascii_digit));
-                let expected = digits.iter().fold(0u64, |n, d| n * 10 + u64::from(d - b'0'));
-                assert!(number == expected);
+                assert!(len > 0 && all_digits);
+                assert!(u128::from(number) == value());
             }
             None => {
-                assert!(len == 0 || !digits.iter().all(u8::is_ascii_digit));
+                assert!(len == 0 || !all_digits || value() > u128::from(u64::MAX));
             }
         }
     }
 
     /// A chunk size never overflows and never panics, whatever the line.
     #[kani::proof]
-    #[kani::unwind(20)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(20))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(28))]
     fn chunk_size_is_sound() {
-        let (bytes, len) = any_bytes::<18>();
+        let (bytes, len) = any_bytes::<CHUNK>();
         if let Some(size) = chunk_size(&bytes[..len]) {
             assert!(len > 0 && bytes[0].is_ascii_hexdigit());
             if len == 1 {
@@ -487,7 +501,8 @@ mod proofs {
     /// a slash, an at sign, a question mark, a space or a control
     /// character, nothing that could change where a request is routed.
     #[kani::proof]
-    #[kani::unwind(14)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(14))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(26))]
     fn host_is_sound() {
         let (bytes, len) = any_bytes::<N>();
         if let Some(name) = host(&bytes[..len]) {

@@ -312,14 +312,17 @@ mod proofs {
     use super::*;
 
     /// `ct_eq` gives the same answer as `==`, for all byte strings of up to
-    /// four bytes each.
+    /// four bytes each; 32, the length of the MACs it compares, with
+    /// `tools/prove.sh big`.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(6))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(34))]
     fn ct_eq_is_equality() {
-        let a: [u8; 4] = kani::any();
-        let b: [u8; 4] = kani::any();
+        const L: usize = if cfg!(feature = "kani-big") { 32 } else { 4 };
+        let a: [u8; L] = kani::any();
+        let b: [u8; L] = kani::any();
         let (a_len, b_len): (usize, usize) = kani::any();
-        kani::assume(a_len <= 4 && b_len <= 4);
+        kani::assume(a_len <= L && b_len <= L);
         let (a, b) = (&a[..a_len], &b[..b_len]);
         assert_eq!(ct_eq(a, b), a == b);
     }

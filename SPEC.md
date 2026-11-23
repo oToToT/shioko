@@ -815,22 +815,24 @@ Kani is a bounded model checker for Rust: it checks a property for every
 input up to a stated size, not for the inputs a test happens to try. It is a
 development tool like TLC; nothing of it ends up in the binary. Proofs live
 next to the code in `#[cfg(kani)] mod proofs` and `tools/prove.sh` runs
-them. In every proof Kani also checks that nothing panics, overflows or
-reads out of bounds.
+them, within bounds CI can afford (three minutes); `tools/prove.sh big`
+(the feature `kani-big`) checks the same proofs for longer inputs, in
+about an hour. In every proof Kani also checks that nothing panics,
+overflows or reads out of bounds.
 
-| Proof | For every input of up to |
-|---|---|
-| a request line that is accepted has a token method and a target in origin form, free of spaces and control characters | 12 bytes |
-| a field line that is accepted has a token name directly before the colon and no control character in its value | 12 bytes |
-| a status line that is accepted has a status from 100 to 599 | 14 bytes |
-| a decimal number is accepted exactly when it is all digits, with the right value | 4 bytes |
-| a chunk size never overflows | 18 bytes |
-| a Host that is accepted is a plain name (no `/`, `@`, space) | 12 bytes |
-| any time is a valid calendar date | all 64-bit times |
-| `ct_eq` equals `==` | 4 bytes each |
-| reading a TLS vector never leaves its input, however its length lies | 8 bytes |
-| a DER element lies within its input | 8 bytes |
-| base64 decodes without panicking, to at most 3 bytes per 4 characters | 8 characters |
+| Proof | For every input of up to (CI) | `tools/prove.sh big` |
+|---|---|---|
+| a request line that is accepted has a token method and a target in origin form, free of spaces and control characters | 12 bytes | 24 bytes |
+| a field line that is accepted has a token name directly before the colon and no control character in its value | 12 bytes | 24 bytes |
+| a status line that is accepted has a status from 100 to 599 | 14 bytes | 24 bytes |
+| a decimal number is accepted exactly when it is all digits and fits a u64, with the right value | 4 bytes | 20 bytes, every length of a u64 |
+| a chunk size never overflows | 18 bytes | 26 bytes |
+| a Host that is accepted is a plain name (no `/`, `@`, space) | 12 bytes | 24 bytes |
+| any time is a valid calendar date | all 64-bit times | |
+| `ct_eq` equals `==` | 4 bytes each | 32 bytes each, a MAC's length |
+| reading a TLS vector never leaves its input, however its length lies | 8 bytes | 16 bytes |
+| a DER element lies within its input | 8 bytes | 16 bytes |
+| base64 decodes without panicking, to at most 3 bytes per 4 characters | 8 characters | 16 characters |
 
 Kani cannot reasonably check code that runs the hash or the ciphers; those
 stay with the test vectors.

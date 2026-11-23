@@ -9,5 +9,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-cargo kani --output-format terse
+# tools/prove.sh big: every proof for longer inputs (feature kani-big):
+# 24 bytes for the HTTP parsers, every length of a u64 in decimal, 16 for
+# DER, base64 and TLS vectors, 32 for ct_eq. Slow; not for CI.
+if [ "${1:-}" = big ]; then
+    cargo kani --features kani-big --output-format terse
+else
+    cargo kani --output-format terse
+fi
 echo "== all proofs passed"

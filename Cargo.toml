@@ -30,6 +30,9 @@ keylog = []
 # spec/Server.tla (tools/servertrace.py): the steps of the server's threads
 # and slots go to the file named by SHIOKO_RECORD. Never deploy it.
 record = []
+# Proofs only: tools/prove.sh big checks every proof for longer inputs than
+# CI does (`cfg(kani)` code only; nothing else changes).
+kani-big = []
 
 # libcrux's CPU-feature detection needs libc; shioko uses only the portable
 # code, so its own stand-in, which detects nothing, takes its place.

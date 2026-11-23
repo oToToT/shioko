@@ -110,11 +110,13 @@ mod proofs {
     /// However lengths in the input lie, reading never panics, and every
     /// vector read lies within the input.
     #[kani::proof]
-    #[kani::unwind(10)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(10))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(18))]
     fn vectors_stay_within_the_input() {
-        let bytes: [u8; 8] = kani::any();
+        const L: usize = if cfg!(feature = "kani-big") { 16 } else { 8 };
+        let bytes: [u8; L] = kani::any();
         let len: usize = kani::any();
-        kani::assume(len <= 8);
+        kani::assume(len <= L);
         let mut r = Reader::new(&bytes[..len]);
         let which: u8 = kani::any();
         let inner = match which % 3 {

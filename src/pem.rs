@@ -137,6 +137,10 @@ pub fn certificates(text: &str) -> Result<Vec<Vec<u8>>, String> {
     if chain.is_empty() { Err("no certificate found".into()) } else { Ok(chain) }
 }
 
+/// Input lengths of the proofs: CI's, and `tools/prove.sh big`'s.
+#[cfg(kani)]
+const PROVED: usize = if cfg!(feature = "kani-big") { 16 } else { 8 };
+
 #[cfg(kani)]
 mod proofs {
     use super::*;
@@ -144,11 +148,12 @@ mod proofs {
     /// Reading a DER element never panics, and what it gives back lies
     /// within the input.
     #[kani::proof]
-    #[kani::unwind(10)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(10))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(18))]
     fn der_element_is_sound() {
-        let bytes: [u8; 8] = kani::any();
+        let bytes: [u8; PROVED] = kani::any();
         let len: usize = kani::any();
-        kani::assume(len <= 8);
+        kani::assume(len <= PROVED);
         if let Some((_, contents, rest)) = element(&bytes[..len]) {
             assert!(contents.len() + rest.len() + 2 <= len);
         }
@@ -159,15 +164,16 @@ mod proofs {
 mod base64_proofs {
     use super::*;
 
-    /// Base64 of any eight bytes of text decodes without panicking, and to
-    /// at most three bytes for every four characters.
+    /// Base64 of any eight (sixteen) bytes of text decodes without
+    /// panicking, and to at most three bytes for every four characters.
     #[kani::proof]
-    #[kani::unwind(10)]
+    #[cfg_attr(not(feature = "kani-big"), kani::unwind(10))]
+    #[cfg_attr(feature = "kani-big", kani::unwind(18))]
     fn base64_is_sound() {
-        let bytes: [u8; 8] = kani::any();
+        let bytes: [u8; PROVED] = kani::any();
         if let Ok(text) = std::str::from_utf8(&bytes) {
             if let Some(decoded) = base64(text) {
-                assert!(decoded.len() <= 6);
+                assert!(decoded.len() <= PROVED / 4 * 3);
             }
         }
     }
