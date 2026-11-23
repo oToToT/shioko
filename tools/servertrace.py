@@ -145,8 +145,7 @@ def steps(lines):
                 state[pump] = "read" if what == "unlock_ok" else "failed"
             continue
         if what == "read_ends":
-            # After a failed write the pump has stopped already.
-            if state.get(pump) not in ("ended", "failed"):
+            if state.get(pump) != "ended":
                 emit("read_ends", conn, side)
                 state[pump] = "ended"
             continue
