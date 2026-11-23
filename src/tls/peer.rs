@@ -37,6 +37,11 @@ struct State {
     held: bool,
     /// The server shut the connection down: reads end, writes fail.
     shut: bool,
+    /// After the handshake the client takes in this much of what the
+    /// server sends, and then stops reading: a write that would go beyond
+    /// waits until the connection is shut down (in the real world, until
+    /// the write's time is up).
+    takes: Option<usize>,
     input: Vec<u8>,
     at: usize,
     piece: usize,
@@ -62,6 +67,14 @@ impl Peer {
         Peer::with(records, piece, true)
     }
 
+    /// Held open, and after the handshake it takes in only `takes` bytes
+    /// of what the server sends, then stops reading.
+    pub fn stalling(records: Vec<(u8, Vec<u8>)>, piece: usize, takes: usize) -> Peer {
+        let peer = Peer::with(records, piece, true);
+        peer.state().takes = Some(takes);
+        peer
+    }
+
     fn with(records: Vec<(u8, Vec<u8>)>, piece: usize, held: bool) -> Peer {
         let hello = client_hello(&crypto::x25519_public(&SECRET));
         let mut transcript = Transcript::default();
@@ -69,6 +82,7 @@ impl Peer {
         Peer(Arc::new((Mutex::new(State {
             held,
             shut: false,
+            takes: None,
             input: record::plain(record::HANDSHAKE, &hello),
             at: 0,
             piece: piece.max(1),
@@ -151,6 +165,9 @@ impl Stream for Peer {
 
     fn write_all(&self, buf: &[u8]) -> io::Result<()> {
         let mut state = self.state();
+        while !state.shut && state.full(buf.len()) {
+            state = self.0.1.wait(state).unwrap();
+        }
         if state.shut {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
@@ -174,6 +191,14 @@ impl Stream for Peer {
 }
 
 impl State {
+    /// Whether `more` bytes would go beyond what the client takes in.
+    fn full(&self, more: usize) -> bool {
+        match (self.takes, self.reading) {
+            (Some(takes), Some((_, from))) => self.output.len() - from + more > takes,
+            _ => false,
+        }
+    }
+
     /// The server has read our ClientHello and wants more: by now it has
     /// sent ServerHello and its flight, which it must have done right. We
     /// send our Finished, then the fuzzer's records.

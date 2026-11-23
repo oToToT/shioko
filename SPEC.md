@@ -441,9 +441,11 @@ Requests:
   all (Linux bounds a write call so; the BSDs would not), so a client must
   read about 270 bytes a second while there is something to read. A quiet
   upstream asks nothing of the client. In a tunnel, our answer to the
-  client's close_notify or KeyUpdate waits for the write lock, so for a
-  client that has stopped reading it waits out that write, up to the same
-  60 seconds.
+  client's close_notify or KeyUpdate, and our close_notify when its stream
+  ends, wait for the write lock, so for a client that has stopped reading
+  they wait out the write under way, up to the same 60 seconds. A
+  shutdown never waits for another thread's write: it cuts the transport,
+  which ends that write; its own close_notify is a write like any other.
 - **Responses and tunnels keep no pace**, by design: server-sent events,
   long polls and WebSockets are quiet for long stretches, a few bytes of
   heartbeat at a time, and a pace would cut them. An upstream may take up

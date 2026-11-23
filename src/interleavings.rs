@@ -67,12 +67,21 @@ struct PipeState {
     held: bool,
     shut: bool,
     got: Vec<u8>,
+    /// Once it has a request head, it takes no more: writes fail.
+    head_only: bool,
 }
 
 impl Pipe {
     fn new(answer: &[u8], piece: usize, held: bool) -> Pipe {
-        let state = PipeState { answer: answer.to_vec(), at: 0, piece, held, shut: false, got: Vec::new() };
+        let state = PipeState { answer: answer.to_vec(), at: 0, piece, held, shut: false, got: Vec::new(), head_only: false };
         Pipe(Arc::new((Mutex::new(state), Condvar::new())))
+    }
+
+    /// The same, but taking nothing after the request head.
+    fn taking_only_the_head(answer: &[u8], piece: usize) -> Pipe {
+        let pipe = Pipe::new(answer, piece, false);
+        pipe.0.0.lock().unwrap().head_only = true;
+        pipe
     }
 
     fn got(&self) -> Vec<u8> {
@@ -94,7 +103,8 @@ impl Stream for Pipe {
 
     fn write_all(&self, buf: &[u8]) -> io::Result<()> {
         let mut state = self.0.0.lock().unwrap();
-        if state.shut {
+        let headed = state.head_only && state.got.windows(4).any(|w| w == b"\r\n\r\n");
+        if state.shut || (headed && !buf.is_empty()) {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
         state.got.extend_from_slice(buf);
@@ -228,6 +238,28 @@ fn a_tunnel_with_a_key_update_both_ways() {
         // The shutdown says close_notify only if the write lock is free.
         assert!(matches!(alert, Some(0) | None), "the server ended with alert {alert:?}");
         assert!(b"up 1up 2".starts_with(&up), "the upstream got {up:?}");
+    });
+}
+
+/// The client stops reading while data flows down, so the pump writing to
+/// it is blocked in a write, holding the write lock; then the upstream
+/// takes no more of what the client sends, which ends the other pump. Its
+/// shutdown must not wait for that lock: it cuts the transport, which
+/// ends the blocked write, and the tunnel ends. (Here a write never times
+/// out, so a shutdown that waited would deadlock; for real it would wait
+/// out the write's 60 s.) If the upstream refuses first, while the lock is
+/// free, the shutdown sends close_notify, which the client still takes.
+#[test]
+fn a_shutdown_does_not_wait_for_a_write_to_a_client_that_does_not_read() {
+    every_schedule(|| {
+        // The 101, the first piece of data (at most 1,000 bytes) and an
+        // alert fit in what the client takes; a second piece does not.
+        let client = Peer::stalling(records(&[(23, UPGRADE), (23, b"up 1")]), usize::MAX, 2_000);
+        let upstream = Pipe::taking_only_the_head(&[SWITCHING, &[b'd'; 20_000][..]].concat(), 1_000);
+        let (down, alert, up) = tunnel(client, upstream);
+        assert!(down.len() < 20_000, "the client took everything");
+        assert!(matches!(alert, Some(0) | None), "the server ended with alert {alert:?}");
+        assert_eq!(up, b"");
     });
 }
 
