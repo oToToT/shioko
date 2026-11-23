@@ -393,7 +393,10 @@ Certificates and keys:
   changed gets the new pair for the handshakes that follow, once it has
   passed the same checks; a pair that does not leaves the one before in
   place, and the log says why. Open connections keep the pair they started
-  with.
+  with. Each look reads each file once and checks what it read: the bytes
+  remembered as seen are the bytes that were checked, so a pair is looked
+  at again as soon as it reads differently, and the first look after the
+  start settles what the files hold then.
 - Nothing else about the chain is checked: its order, key usage and
   signature algorithms are whatever the certificate file holds.
 - The `shioko` user needs read access to the configured paths. For

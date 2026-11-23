@@ -51,9 +51,16 @@ impl Identity {
     /// an ECDSA P-256 key, and its public key must be the one in the first
     /// certificate of the chain.
     pub fn load(cert: &Path, key: &Path) -> Result<Identity, String> {
-        let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
-        let chain = pem::certificates(&read(cert)?).map_err(|e| format!("{}: {e}", cert.display()))?;
-        let scalar = pem::private_key(&read(key)?).map_err(|e| format!("{}: {e}", key.display()))?;
+        let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
+        Identity::parse(&read(cert)?, &read(key)?, cert, key)
+    }
+
+    /// Checks what a site's certificate and key files held when they were
+    /// read: `certs` and `secret`. The paths are for what is said of them.
+    pub fn parse(certs: &[u8], secret: &[u8], cert: &Path, key: &Path) -> Result<Identity, String> {
+        let text = |bytes, path: &Path| std::str::from_utf8(bytes).map_err(|e| format!("{}: {e}", path.display()));
+        let chain = pem::certificates(text(certs, cert)?).map_err(|e| format!("{}: {e}", cert.display()))?;
+        let scalar = pem::private_key(text(secret, key)?).map_err(|e| format!("{}: {e}", key.display()))?;
         let key_error = || format!("{}: the key is not a valid P-256 private key", key.display());
         let signing = SigningKey::from_bytes(&scalar).map_err(|_| key_error())?;
         let public = signing.public_key().map_err(|_| key_error())?;

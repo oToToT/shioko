@@ -66,8 +66,12 @@ pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// for a site served over plain HTTP.
 pub type Identities = Vec<Option<Arc<Identity>>>;
 
-/// What a site's certificate and key files held, if both could be read.
-type Files = Option<(Vec<u8>, Vec<u8>)>;
+/// What a site's certificate and key files held when they were last looked
+/// at, or why they could not be read; `None` before the first look.
+type Files = Option<Result<(Vec<u8>, Vec<u8>), String>>;
+
+/// How the watcher reads a file.
+type ReadFile<'a> = &'a dyn Fn(&std::path::Path) -> std::io::Result<Vec<u8>>;
 
 /// Which pool a connection's slot is from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,11 +149,6 @@ pub struct Server {
     ids: AtomicU64,
 }
 
-/// What a site's certificate and key files hold, if both can be read.
-fn read_identity_files(site: &crate::config::Site) -> Files {
-    let (cert, key) = (site.cert.as_ref()?, site.key.as_ref()?);
-    Some((std::fs::read(cert).ok()?, std::fs::read(key).ok()?))
-}
 
 /// The work of the thread that stops the server, given what waiting for
 /// SIGTERM or SIGINT gave (`signals::wait`): on a signal, let nobody in
@@ -202,7 +201,10 @@ impl Server {
         config: Config, identities: Vec<Option<Identity>>, acme: PathBuf, log: Box<dyn Log + Send>, cap: usize,
         per_address: usize,
     ) -> Arc<Server> {
-        let files = config.sites.iter().map(read_identity_files).collect();
+        // Nothing has been looked at yet: the first look, a minute from
+        // now, settles what the files hold then, whatever they held when
+        // the identities given here were read.
+        let files = config.sites.iter().map(|_| None).collect();
         let identities = RwLock::new(Arc::new(identities.into_iter().map(|i| i.map(Arc::new)).collect()));
         let public_tls = config.sites.iter().any(|site| site.cert.is_some() && site.allow.is_none());
         Arc::new(Server {
@@ -296,19 +298,32 @@ impl Server {
     /// it had, and the log says why. Connections already open are not
     /// affected.
     pub fn reload(&self) {
+        self.reload_reading(&|path| std::fs::read(path));
+    }
+
+    /// `reload`, reading the files with `read`. Each file is read once, and
+    /// what was read is what is checked: the bytes remembered as seen are
+    /// the bytes that were made an identity, or found not to make one, so
+    /// nothing is settled by a second read that may go differently.
+    fn reload_reading(&self, read: ReadFile) {
         let mut files = self.files.lock().unwrap_or_else(PoisonError::into_inner);
         let mut identities: Identities = self.identities().as_ref().clone();
         let mut changed = false;
         for ((site, seen), identity) in self.config.sites.iter().zip(files.iter_mut()).zip(identities.iter_mut()) {
             let (Some(cert), Some(key)) = (&site.cert, &site.key) else { continue };
-            let now = read_identity_files(site);
-            if now == *seen {
+            let read = |path: &PathBuf| read(path).map_err(|e| format!("{}: {e}", path.display()));
+            let now = read(cert).and_then(|certs| Ok((certs, read(key)?)));
+            if seen.as_ref() == Some(&now) {
                 continue;
             }
-            // A file being replaced may read as neither; once it can be
-            // read, it is looked at again.
-            *seen = now;
-            match Identity::load(cert, key) {
+            // A file being replaced may not be read, or not make an
+            // identity with the other; once it reads differently, it is
+            // looked at again.
+            let loaded = now.as_ref().map_err(String::clone).and_then(|(certs, secret)| Identity::parse(certs, secret, cert, key));
+            *seen = Some(now);
+            match loaded {
+                // What is served already: the first look after the start.
+                Ok(loaded) if identity.as_ref().is_some_and(|served| served.chain == loaded.chain) => {}
                 Ok(loaded) => {
                     *identity = Some(Arc::new(loaded));
                     changed = true;
@@ -615,6 +630,63 @@ mod tests {
         put("site.test", "site.test");
         server.reload();
         assert_eq!(chain(), chain_of("site.test"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Bug (found in review): what the certificate files held was read
+    /// twice, once to remember it and once to make the identity, at the
+    /// start and at each reload. When the two reads went differently (the
+    /// files replaced in between, or the second read failing), the bytes of
+    /// the new certificate were remembered as seen while the old one stayed
+    /// in place, and no later look took the new one up: the old certificate
+    /// was served until a restart. Each file is now read once, and what was
+    /// read is what is checked.
+    #[test]
+    fn bug_a_renewed_certificate_read_twice_could_be_missed_for_good() {
+        let dir = std::env::temp_dir().join(format!("shioko-reload-twice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let certs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs");
+        let put = |name: &str| {
+            std::fs::copy(certs.join(format!("{name}.chain.pem")), dir.join("chain.pem")).unwrap();
+            std::fs::copy(certs.join(format!("{name}.key")), dir.join("key.pem")).unwrap();
+        };
+        let chain_of = |name: &str| {
+            Identity::load(&certs.join(format!("{name}.chain.pem")), &certs.join(format!("{name}.key"))).unwrap().chain
+        };
+        let conf = dir.join("shioko.conf");
+        let text = format!("[site.test]\nupstream = a:1\ncert = {0}/chain.pem\nkey = {0}/key.pem\n", dir.display());
+        std::fs::write(&conf, text).unwrap();
+        let serving = |name: &str| {
+            put(name);
+            let config = crate::config::Config::load(&conf).unwrap();
+            let first = Identity::load(&dir.join("chain.pem"), &dir.join("key.pem")).unwrap();
+            (config, first)
+        };
+
+        // At the start: the files are replaced after the identity was read
+        // from them and before the server looks at them itself.
+        let (config, first) = serving("site.test");
+        put("tls.test");
+        let server = Server::new(config, vec![Some(first)], "/nonexistent".into(), Box::new(Kept::default()), 4, PER_ADDRESS);
+        server.reload();
+        assert_eq!(server.identities()[0].as_ref().unwrap().chain, chain_of("tls.test"), "replaced while starting");
+
+        // At a reload: a file can be read once, and not a second time.
+        let (config, first) = serving("site.test");
+        let server = Server::new(config, vec![Some(first)], "/nonexistent".into(), Box::new(Kept::default()), 4, PER_ADDRESS);
+        server.reload();
+        put("tls.test");
+        let read_before: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+        server.reload_reading(&|path| {
+            let mut read_before = read_before.lock().unwrap();
+            if read_before.iter().any(|before| before == path) {
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            read_before.push(path.to_path_buf());
+            std::fs::read(path)
+        });
+        server.reload();
+        assert_eq!(server.identities()[0].as_ref().unwrap().chain, chain_of("tls.test"), "the second read failed");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
