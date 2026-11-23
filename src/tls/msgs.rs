@@ -87,6 +87,35 @@ fn u16s(mut list: Reader<'_>) -> Option<Vec<u16>> {
     Some(values)
 }
 
+/// A set of two-byte codes (extension types, groups), a bit for each of the
+/// 65,536, so that asking whether one was seen before takes one step however
+/// many a client sends.
+struct Codes(Vec<u64>);
+
+impl Codes {
+    fn new() -> Codes {
+        Codes(vec![0; 1 << 10])
+    }
+
+    fn place(code: u16) -> (usize, u64) {
+        (usize::from(code >> 6), 1 << (code & 63))
+    }
+
+    /// Adds the code, and says whether it was there already.
+    fn add(&mut self, code: u16) -> bool {
+        let (word, bit) = Codes::place(code);
+        let Some(word) = self.0.get_mut(word) else { return false };
+        let was = *word & bit != 0;
+        *word |= bit;
+        was
+    }
+
+    fn holds(&self, code: u16) -> bool {
+        let (word, bit) = Codes::place(code);
+        self.0.get(word).is_some_and(|word| word & bit != 0)
+    }
+}
+
 /// The contents of an extension as `read` decodes them, if it is there.
 /// `read` must take all of it.
 fn extension<'a, T>(data: Option<Reader<'a>>, read: impl FnOnce(&mut Reader<'a>) -> Option<T>) -> Result<Option<T>, Alert> {
@@ -132,12 +161,15 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
     let mut extensions = body.vec16().ok_or(decode_error)?;
     body.end().ok_or(decode_error)?;
     let mut found: Vec<(u16, Reader<'_>)> = Vec::new();
-    let (mut repeated, mut psk_last) = (false, true);
+    let mut kinds = Codes::new();
+    let (mut repeated, mut psk_seen, mut psk_last) = (false, false, true);
     while !extensions.is_empty() {
         let kind = extensions.u16().ok_or(decode_error)?;
         let data = extensions.vec16().ok_or(decode_error)?;
-        repeated |= found.iter().any(|(k, _)| *k == kind);
-        psk_last &= !found.iter().any(|(k, _)| *k == PRE_SHARED_KEY);
+        repeated |= kinds.add(kind);
+        // An extension after pre_shared_key: that one was not the last.
+        psk_last &= !psk_seen;
+        psk_seen |= kind == PRE_SHARED_KEY;
         found.push((kind, data));
     }
     let get = |kind: u16| found.iter().find(|(k, _)| *k == kind).map(|(_, data)| *data);
@@ -213,14 +245,18 @@ pub fn client_hello(message: &[u8]) -> Result<ClientHello<'_>, Alert> {
     // 6. The key shares: one per group at most, only for offered groups,
     // ours of the length their group gives them.
     let mut share = None;
-    for (index, &(group, key)) in shares.iter().enumerate() {
-        let again = shares.iter().take(index).any(|(g, _)| *g == group);
+    let (mut offered, mut shared) = (Codes::new(), Codes::new());
+    for &group in &groups {
+        offered.add(group);
+    }
+    for &(group, key) in &shares {
+        let again = shared.add(group);
         let length = match group {
             X25519 => Some(32),
             X25519MLKEM768 => Some(X25519MLKEM768_SHARE_LEN),
             _ => None,
         };
-        if again || !groups.contains(&group) || length.is_some_and(|n| key.len() != n) {
+        if again || !offered.holds(group) || length.is_some_and(|n| key.len() != n) {
             return Err(Alert::IllegalParameter);
         }
         if group == X25519MLKEM768 || (group == X25519 && share.is_none()) {
@@ -680,6 +716,44 @@ pub mod tests {
                 }
                 assert_eq!(seen, [SUPPORTED_VERSIONS, KEY_SHARE]);
             }
+        }
+    }
+
+    /// Bug (found in review): each extension was compared with all the
+    /// extensions before it, and each key share with all the shares before
+    /// it and with all the groups, so a ClientHello filled with thousands
+    /// of them cost a hundred milliseconds of CPU and more, where an
+    /// ordinary one costs microseconds, and that before any allowlist was
+    /// looked at. Both are now told in one pass: eight times as many take
+    /// about eight times as long, not sixty-four.
+    #[test]
+    fn bug_a_client_hello_took_time_squared_in_its_extensions_and_key_shares() {
+        let share = [9u8; 32];
+        // Extensions we do not know, each empty.
+        let extensions = |count: u16| {
+            let mut hello = Hello::new("a.test", &share);
+            hello.extensions.as_mut().unwrap().extend((0..count).map(|i| (0x4000 + i, vec![])));
+            hello.bytes()
+        };
+        // Groups we do not know, with a key share of a byte for each.
+        let shares = |count: u16| {
+            let groups: Vec<u16> = [X25519].into_iter().chain((0..count).map(|i| 0x4000 + i)).collect();
+            let shares: Vec<(u16, &[u8])> = groups.iter().map(|&group| (group, if group == X25519 { &share[..] } else { &[1u8][..] })).collect();
+            Hello::new("a.test", &share).set(SUPPORTED_GROUPS, vec16(&u16s(&groups))).set(KEY_SHARE, key_shares(&shares)).bytes()
+        };
+        // The fastest of some runs, to keep other work on the machine out.
+        let fastest = |message: &[u8]| {
+            assert!(message.len() <= MESSAGE_LIMIT);
+            let run = || {
+                let started = std::time::Instant::now();
+                assert_eq!(client_hello(message).unwrap().share, Some((X25519, &share[..])));
+                started.elapsed()
+            };
+            (0..7).map(|_| run()).min().unwrap()
+        };
+        for (what, few, many) in [("extensions", extensions(2_000), extensions(16_000)), ("key shares", shares(1_000), shares(8_000))] {
+            let (few, many) = (fastest(&few), fastest(&many));
+            assert!(many < few * 24, "eight times the {what} took {many:?}, not about eight times {few:?}");
         }
     }
 
