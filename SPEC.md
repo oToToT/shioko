@@ -714,8 +714,9 @@ of a tunnel.
   or connection, and a connection's to exactly one pool, on every path
   including panic. (Checked with pools of 2, one connection per address,
   three connections and one tunnel at a time; `tools/spec-big.sh`, too slow
-  for CI, checks four connections from three addresses, and with
-  `TUNNELS=2` two tunnels at a time.)
+  for CI, checks four connections from three addresses, one tunnel at a
+  time. `TUNNELS=2` lets it allow two at a time, a run not yet taken to
+  its end.)
 - No tunnel thread outlives its connection; two threads never write to the
   client at once; copying from the client never waits for the write lock,
   only answering a KeyUpdate that client asked for does.
@@ -960,9 +961,9 @@ port 80 is reachable by the ACME server.
   2 and 3 connections. `tools/spec-big.sh` goes further on a developer
   machine: `Handshake.tla` with sequence numbers up to 3, two key updates
   each way and 3 quiet records (1.6 million states, under a minute), and
-  `Server.tla` with 4 connections from 3 addresses (500,868 states, each
-  invariant in every one; the temporal properties, checked last, take
-  over an hour more).
+  `Server.tla` with 4 connections from 3 addresses and one tunnel at a
+  time (500,868 states, every invariant and temporal property holding;
+  4 h 20 min, most of it the temporal properties).
   `Http.tla`'s functions are checked on every input of their finite
   domains. The real server at
   full size is checked against the specs only along the paths recorded
