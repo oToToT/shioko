@@ -204,9 +204,13 @@ impl Buffer {
         Ok(())
     }
 
-    /// One read from the stream, added to the pending bytes.
+    /// One read from the stream, added to the pending bytes. The bytes
+    /// already used are dropped first, so the buffer never holds more than
+    /// what is pending and one read.
     fn fill(&mut self, stream: &impl Stream) -> io::Result<usize> {
         self.before_read(stream)?;
+        self.data.drain(..self.start.min(self.data.len()));
+        self.start = 0;
         let old = self.data.len();
         self.data.resize(old.saturating_add(READ_SIZE), 0);
         let result = stream.read(self.data.get_mut(old..).unwrap_or_default());
@@ -608,5 +612,34 @@ mod tests {
         assert_eq!(writer.write_timeout().unwrap(), Some(Duration::from_millis(500)));
         drop(writer);
         draining.join().unwrap();
+    }
+
+    /// Bug (found in review): the buffer let go of the bytes it
+    /// had handed out only once it had handed out all it held, and each
+    /// read went on at its end. Records of TLS, a little longer than one
+    /// read, arriving back to back almost never leave it empty, so a long
+    /// upload was kept whole in memory. Lines arriving the same way did the
+    /// same.
+    #[test]
+    fn bug_a_buffer_kept_every_byte_that_passed_through() {
+        // 1,000 records of 16,406 bytes, the most TLS sends, in reads of
+        // 16 KiB: a 16 MB upload.
+        const RECORD: usize = 16_406;
+        let stream: Vec<u8> = (0..RECORD * 1_000).map(|i| (i % 251) as u8).collect();
+        let script = Script::new(stream.chunks(READ_SIZE).map(|c| Step::Data(c.to_vec())).collect());
+        let mut buffer = Buffer::new();
+        for record in stream.chunks(RECORD) {
+            assert!(buffer.need(&script, RECORD).unwrap());
+            assert_eq!(buffer.take_exactly(RECORD).unwrap(), record);
+            assert!(buffer.data.len() <= RECORD + READ_SIZE, "the buffer holds {} bytes", buffer.data.len());
+        }
+        // Lines of 100 bytes in reads of 16 KiB, which end within a line.
+        let line = format!("{}\r\n", "x".repeat(98));
+        let script = Script::new(line.repeat(2_000).as_bytes().chunks(READ_SIZE).map(|c| Step::Data(c.to_vec())).collect());
+        let mut buffer = Buffer::new();
+        for _ in 0..2_000 {
+            assert_eq!(buffer.line(&script, 200).unwrap().len(), 98);
+            assert!(buffer.data.len() <= 100 + READ_SIZE, "the buffer holds {} bytes", buffer.data.len());
+        }
     }
 }
