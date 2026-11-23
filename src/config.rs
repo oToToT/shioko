@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! [vw.example.org]
-//! upstream  = 127.0.0.1:3678
+//! upstream  = 127.0.0.1:8000
 //! cert      = /etc/letsencrypt/live/vw.example.org/fullchain.pem
 //! key       = /etc/letsencrypt/live/vw.example.org/privkey.pem
 //! websocket = yes
@@ -230,7 +230,7 @@ pub mod tests {
         let config = parse(
             "# the first site\n\
              [VW.Example.org]\n\
-             upstream  = 127.0.0.1:3678\n\
+             upstream  = 127.0.0.1:8000\n\
              cert      = /certs/chain.pem\n\
              key       = /certs/key.pem   # comment\n\
              websocket = yes\n\
@@ -243,7 +243,7 @@ pub mod tests {
         .unwrap();
         let site = config.site(b"vw.EXAMPLE.org").unwrap();
         assert_eq!(site.name, "vw.example.org");
-        assert_eq!(site.upstream, "127.0.0.1:3678");
+        assert_eq!(site.upstream, "127.0.0.1:8000");
         assert_eq!(site.cert, Some(PathBuf::from("/certs/chain.pem")));
         assert!(site.websocket);
         assert_eq!(site.max_body, 525 << 20);
@@ -261,8 +261,8 @@ pub mod tests {
     fn configurations_like_the_examples() {
         let files = |_: &Path| Ok(String::from("173.245.48.0/20\n"));
         for text in [
-            "[vault.example.org]\nupstream = 127.0.0.1:3678\ncert = /a\nkey = /b\nwebsocket = yes\nallow = /etc/shioko/cloudflare.txt\nmax-body = 525M\n",
-            "[chat.example.org]\nupstream = 127.0.0.1:8787\ncert = /a\nkey = /b\nwebsocket = yes\n\n[files.example.net]\nupstream = 127.0.0.1:1443\ncert = /a\nkey = /b\nwebsocket = yes\n",
+            "[vault.example.org]\nupstream = 127.0.0.1:8000\ncert = /a\nkey = /b\nwebsocket = yes\nallow = /etc/shioko/cloudflare.txt\nmax-body = 525M\n",
+            "[chat.example.org]\nupstream = 127.0.0.1:3000\ncert = /a\nkey = /b\nwebsocket = yes\n\n[files.example.net]\nupstream = 127.0.0.1:9000\ncert = /a\nkey = /b\nwebsocket = yes\n",
             "[media.example.org]\nupstream = 127.0.0.1:8096\ncert = /a\nkey = /b\nwebsocket = yes\n\n[wiki.internal]\nupstream = 10.0.0.5:8080\nallow = 10.0.0.0/8\n",
         ] {
             assert!(Config::parse(text, &files).is_ok(), "{text}");

@@ -74,7 +74,7 @@ section per site, named by its hostname. Six keys. No global settings.
 
 ```
 [vault.example.org]
-upstream  = 127.0.0.1:3678
+upstream  = 127.0.0.1:8000
 cert      = /etc/letsencrypt/live/vault.example.org/fullchain.pem
 key       = /etc/letsencrypt/live/vault.example.org/privkey.pem
 websocket = yes
@@ -114,7 +114,7 @@ served for any hostname.
 
 ```
 [vault.example.org]
-upstream  = 127.0.0.1:3678
+upstream  = 127.0.0.1:8000
 cert      = /etc/letsencrypt/live/vault.example.org/fullchain.pem
 key       = /etc/letsencrypt/live/vault.example.org/privkey.pem
 websocket = yes
@@ -126,7 +126,7 @@ Two WebSocket sites on one host, under different domains:
 
 ```
 [chat.example.org]
-upstream  = 127.0.0.1:8787
+upstream  = 127.0.0.1:3000
 cert      = /etc/letsencrypt/live/chat.example.org/fullchain.pem
 key       = /etc/letsencrypt/live/chat.example.org/privkey.pem
 websocket = yes

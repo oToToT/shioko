@@ -157,7 +157,7 @@ service:
 
 ```
 [vault.example.org]
-upstream  = 127.0.0.1:3678
+upstream  = 127.0.0.1:8000
 cert      = /etc/letsencrypt/live/vault.example.org/fullchain.pem
 key       = /etc/letsencrypt/live/vault.example.org/privkey.pem
 websocket = yes
@@ -165,7 +165,7 @@ allow     = /etc/shioko/cloudflare.txt
 max-body  = 525M
 
 [chat.example.net]
-upstream  = localhost:8787
+upstream  = localhost:3000
 cert      = /etc/letsencrypt/live/chat.example.net/fullchain.pem
 key       = /etc/letsencrypt/live/chat.example.net/privkey.pem
 websocket = yes
