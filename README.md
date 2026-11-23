@@ -228,6 +228,7 @@ nix develop            # TLC, OpenSSL, curl
 tools/check.sh         # lint, tests, the threads under thousands of
                        # schedules (shuttle/), release builds for both targets
 tools/spec.sh          # model-check the specs, check the RFC lists
+tools/spec-big.sh      # the same models within larger bounds (slow; not CI)
 tools/prove.sh [big]   # Kani proofs (big: longer inputs, about an hour)
 tools/interop.sh       # a real shioko against OpenSSL and curl
 tools/ci.sh            # all of the above in Linux containers, tlsfuzzer,

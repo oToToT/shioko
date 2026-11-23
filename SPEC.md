@@ -687,7 +687,9 @@ of a tunnel.
   share of the public pool; every slot belongs to exactly one accept loop
   or connection, and a connection's to exactly one pool, on every path
   including panic. (Checked with pools of 2, one connection per address,
-  three connections and one tunnel at a time.)
+  three connections and one tunnel at a time; `tools/spec-big.sh`, too slow
+  for CI, checks four connections from three addresses, and with
+  `TUNNELS=2` two tunnels at a time.)
 - No tunnel thread outlives its connection; two threads never write to the
   client at once; copying from the client never waits for the write lock,
   only answering a KeyUpdate that client asked for does.
@@ -926,17 +928,27 @@ port 80 is reachable by the ACME server.
   the mitigations are the spec conformance tests, interop, tlsfuzzer and
   coverage-guided fuzzing.
 - **TLA+ checks bounded models, and only of the designs.** TLC explores
-  every state, but within bounds: `Handshake.tla` with sequence numbers up
-  to 2 and one key update in each direction (`MaxSeq = 2`, `MaxGen = 1`),
-  `Server.tla` with a cap of 2 and 3 connections. `Http.tla`'s functions
-  are checked on every input of their finite domains. The real server at
+  every state, but within bounds. In CI: `Handshake.tla` with sequence
+  numbers up to 2, one key update in each direction and 2 quiet records
+  (`MaxSeq = 2`, `MaxGen = 1`, `MaxQuiet = 2`), `Server.tla` with a cap of
+  2 and 3 connections. `tools/spec-big.sh` goes further on a developer
+  machine: `Handshake.tla` with sequence numbers up to 3, two key updates
+  each way and 3 quiet records (1.6 million states, under a minute), and
+  `Server.tla` with 4 connections from 3 addresses (500,868 states, each
+  invariant in every one; the temporal properties, checked last, take
+  over an hour more).
+  `Http.tla`'s functions are checked on every input of their finite
+  domains. The real server at
   full size is checked against the specs only along the paths recorded
   runs took (tlsfuzzer against `Handshake.tla`, an end-to-end run with 512
-  slots against `Server.tla`). Outside the specs altogether: byte-level
+  slots against `Server.tla`). The real code's threads are run by shuttle
+  under thousands of schedules, which finds what the schedules it tries
+  show, not every interleaving. Outside the specs altogether: byte-level
   parsing, record framing and reassembly (Kani proofs up to small sizes,
-  mutation tests, tlsfuzzer), the cryptography (libcrux, test vectors),
-  and the operating system: file descriptors, blocking reads and writes,
-  timeouts (tests, the soak run). A bug there is not one TLA+ would catch.
+  larger ones locally, mutation tests, coverage-guided fuzzing,
+  tlsfuzzer), the cryptography (libcrux, test vectors), and the operating
+  system: file descriptors, blocking reads and writes, timeouts (tests,
+  the soak run). A bug there is not one TLA+ would catch.
 - **Building needs crates.io.** `Cargo.lock`'s checksums make a changed
   crate fail the build, but a build cannot happen while crates.io (or a
   mirror of it) is unreachable, and the crates' build scripts run on the
