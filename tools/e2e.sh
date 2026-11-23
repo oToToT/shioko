@@ -62,6 +62,7 @@ fi
 
 if [ "$mode" = soak ] || [ "$mode" = record ]; then
     echo "== soak"
+    $compose run --rm client python3 soak.py selftest || failed=1
     # shioko is process 1 of its container.
     echo "seconds,rss_kb,threads,fds,cpu_seconds" > "$out/resources.csv"
     (

@@ -1,6 +1,7 @@
 """Soak runs against shioko, from the client container (tools/e2e.sh soak).
 
     python3 soak.py MINUTES
+    python3 soak.py selftest      (checks only the verdict on the numbers)
 
 1. 500 connections at once, each sending requests on one kept-alive TLS
    connection for MINUTES; every response is checked.
@@ -213,7 +214,73 @@ def websockets(count, seconds):
                              "first failures": failed[:5]}
 
 
+def failed(numbers):
+    """Whether the numbers of a soak show something wrong. A request's time
+    is None when it was not answered; one answered within half a
+    millisecond took 0.0 s, which is not a failure."""
+    if numbers["connections"]["failed connections"] or numbers["websockets"]["failed"]:
+        return True
+    slow = numbers["slow bodies from outside"]
+    # Held until the pace ends them, a minute after their heads, not before.
+    if slow["opened"] != 64 or slow["still open after 150 s"] \
+            or not 50 <= slow["all ended after s"] <= 80 \
+            or slow["a request from inside meanwhile took s"] is None:
+        return True
+    for side, other, cap in (("outside", "inside", 64), ("inside", "outside", 512)):
+        slow = numbers["slow clients from " + side]
+        meanwhile = slow["a request from %s meanwhile took s" % other]
+        if slow["held"] != cap or slow["still open after 120 s"] \
+                or slow["a request from %s meanwhile took s" % side] is not None \
+                or meanwhile is None or meanwhile > 1 \
+                or slow["a request afterwards took s"] is None:
+            return True
+    return False
+
+
+# The numbers of a soak in CI (run 45201490330), where all went well.
+PASSED = {
+    "connections": {"failed connections": 0},
+    "websockets": {"failed": 0},
+    "slow bodies from outside": {"opened": 64, "still open after 150 s": 0, "all ended after s": 65.0,
+                                 "a request from inside meanwhile took s": 0.001},
+    "slow clients from outside": {"held": 64, "still open after 120 s": 0,
+                                  "a request from inside meanwhile took s": 0.0,
+                                  "a request from outside meanwhile took s": None,
+                                  "a request afterwards took s": 0.001},
+    "slow clients from inside": {"held": 512, "still open after 120 s": 0,
+                                 "a request from outside meanwhile took s": 0.001,
+                                 "a request from inside meanwhile took s": None,
+                                 "a request afterwards took s": 0.0},
+}
+
+
+def selftest():
+    """Checks the verdict on that soak, and on changes to it that must or
+    must not fail."""
+    def changed(part, key, value):
+        numbers = json.loads(json.dumps(PASSED))
+        numbers[part][key] = value
+        return numbers
+    cases = [
+        # bug: the request afterwards was answered within half a
+        # millisecond, 0.0 s, and was taken for one not answered.
+        ("bug: a request answered in 0.0 s was taken for one not answered", PASSED, False),
+        ("a request afterwards not answered", changed("slow clients from inside", "a request afterwards took s", None), True),
+        ("a request from the full side served", changed("slow clients from inside", "a request from inside meanwhile took s", 0.0), True),
+        ("a request from the other side not served", changed("slow clients from outside", "a request from inside meanwhile took s", None), True),
+        ("slow bodies cut too early", changed("slow bodies from outside", "all ended after s", 20.0), True),
+        ("a WebSocket failed", changed("websockets", "failed", 1), True),
+    ]
+    wrong = [name for name, numbers, fails in cases if failed(numbers) != fails]
+    for name in wrong:
+        print("selftest: wrong verdict: " + name)
+    print("selftest: %d of %d verdicts right" % (len(cases) - len(wrong), len(cases)))
+    return 1 if wrong else 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["selftest"]:
+        sys.exit(selftest())
     minutes = float(sys.argv[1]) if len(sys.argv) > 1 else 10
     for name, run in (("500 connections", lambda: many_connections(500, int(minutes * 60))),
                       ("600 slow clients from outside", lambda: slow_clients(600, "outside")),
@@ -225,15 +292,4 @@ if __name__ == "__main__":
         print(json.dumps(numbers, indent=1), flush=True)
     with open("/results/soak.json", "w") as f:
         json.dump(numbers, f, indent=1)
-    bad = numbers["connections"]["failed connections"] or numbers["websockets"]["failed"]
-    slow = numbers["slow bodies from outside"]
-    # Held until the pace ends them, a minute after their heads, not before.
-    bad = bad or slow["opened"] != 64 or slow["still open after 150 s"] \
-        or not 50 <= slow["all ended after s"] <= 80 or slow["a request from inside meanwhile took s"] is None
-    for side, other, cap in (("outside", "inside", 64), ("inside", "outside", 512)):
-        slow = numbers["slow clients from " + side]
-        meanwhile = slow["a request from %s meanwhile took s" % other]
-        bad = bad or slow["held"] != cap or slow["still open after 120 s"] \
-            or slow["a request from %s meanwhile took s" % side] is not None \
-            or meanwhile is None or meanwhile > 1 or not slow["a request afterwards took s"]
-    sys.exit(1 if bad else 0)
+    sys.exit(1 if failed(numbers) else 0)
