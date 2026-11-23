@@ -108,9 +108,11 @@ wait "$drainer" || failed=1
 sed -n '/^{/,$p' "$out/drain.log"
 echo "shioko exited with status $code, ${took} s after SIGTERM"
 # Exited cleanly, as soon as the slow request was answered, not at the
-# 10-second deadline, and having said so.
+# 10-second deadline, and having said so: "stopped" is the last error
+# line. (Access lines go to stdout, which docker keeps apart from stderr;
+# merged, a line written just before "stopped" may come after it.)
 if [ "$code" != 0 ] || [ "$took" -ge 9 ] ||
-    ! docker logs "$container" 2>&1 | tail -n 1 | grep -qx stopped; then
+    ! docker logs "$container" 2>&1 > /dev/null | tail -n 1 | grep -qx stopped; then
     echo "shioko did not stop as it should"
     failed=1
 fi
