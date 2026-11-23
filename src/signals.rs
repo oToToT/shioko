@@ -13,6 +13,8 @@
 #![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #![allow(unsafe_code)]
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 const SIGINT: u32 = 2;
 const SIGTERM: u32 = 15;
 /// The kernel's signal set: bit n - 1 for signal n.
@@ -70,6 +72,10 @@ enum Taken {
     Failed(isize),
 }
 
+/// A signal that was pending already when `start` looked, which looking
+/// took; `wait` hands it out first.
+static EARLY: AtomicU32 = AtomicU32::new(0);
+
 fn taken(result: isize) -> Taken {
     match u32::try_from(result) {
         Ok(signal) if signal == SIGTERM || signal == SIGINT => Taken::Signal(signal),
@@ -86,27 +92,41 @@ fn taken(result: isize) -> Taken {
 pub fn start() -> Result<(), String> {
     match taken(take(false)) {
         Taken::Failed(error) => return Err(format!("rt_sigtimedwait fails with error {error}")),
-        // A signal that came before anything was blocked has ended the
-        // process already; one that is pending now is taken again by wait.
-        Taken::Signal(_) | Taken::Again => {}
+        // Pending already: whoever started us had it blocked, and a program
+        // keeps its mask and its pending signals across exec. Looking took
+        // it, so it is kept for wait. (One that came while nothing blocked
+        // it has ended the process already.)
+        Taken::Signal(signal) => EARLY.store(signal, Ordering::SeqCst),
+        Taken::Again => {}
     }
     if mask(SIG_BLOCK) { Ok(()) } else { Err("rt_sigprocmask fails".into()) }
 }
 
 /// Waits for SIGTERM or SIGINT, made ready by `start`; returns which came.
 /// If waiting fails for good, which `start` makes all but impossible, this
-/// thread lets the signals through again, so the next one ends the process
-/// at once as by default, and parks for ever instead of spinning.
-pub fn wait() -> u32 {
+/// thread lets the signals through again, so that the next one ends the
+/// process at once as by default, and says so. The caller must then keep
+/// this thread alive (and not spinning): it is the one thread that lets
+/// them through.
+pub fn wait() -> Result<u32, String> {
+    match EARLY.swap(0, Ordering::SeqCst) {
+        0 => {}
+        signal => return Ok(signal),
+    }
     loop {
         match taken(take(true)) {
-            Taken::Signal(signal) => return signal,
+            Taken::Signal(signal) => return Ok(signal),
             Taken::Again => {}
-            Taken::Failed(_) => {
-                mask(SIG_UNBLOCK);
-                loop {
-                    std::thread::park();
-                }
+            // rt_sigprocmask fails only on a bad pointer or a bad argument
+            // (EFAULT, EINVAL), and gets neither here; were it to fail all
+            // the same, the signals would stay blocked everywhere.
+            Taken::Failed(error) if mask(SIG_UNBLOCK) => {
+                return Err(format!("waiting for a signal fails with error {error}: SIGTERM and SIGINT now end the server at once"));
+            }
+            Taken::Failed(error) => {
+                return Err(format!(
+                    "waiting for a signal fails with error {error}, and SIGTERM and SIGINT cannot be let through again: only SIGKILL stops the server"
+                ));
             }
         }
     }
@@ -169,6 +189,37 @@ mod tests {
     fn the_two_signals_can_be_blocked() {
         assert_eq!(SET, 0b100_0000_0000_0010);
         assert_eq!(std::thread::spawn(start).join().unwrap(), Ok(()));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    const GETPID_GETTID_TGKILL: [usize; 3] = [39, 186, 234];
+    #[cfg(target_arch = "aarch64")]
+    const GETPID_GETTID_TGKILL: [usize; 3] = [172, 178, 131];
+
+    /// Bug (found in review): a SIGTERM already pending when shioko started
+    /// (sent while whoever started it had it blocked, which a program keeps
+    /// across exec) was taken by the check in `start` and dropped, and the
+    /// stop never happened. In a thread of its own, which blocks the signal
+    /// first, so that the signal can reach no other thread.
+    #[test]
+    fn bug_a_sigterm_pending_at_start_was_lost() {
+        std::thread::spawn(|| {
+            assert!(mask(SIG_BLOCK));
+            let [getpid, gettid, tgkill] = GETPID_GETTID_TGKILL;
+            // SAFETY: getpid and gettid take no arguments and touch no
+            // memory; tgkill takes three numbers.
+            let sent = unsafe {
+                let pid = syscall4(getpid, 0, 0, 0, 0);
+                let tid = syscall4(gettid, 0, 0, 0, 0);
+                syscall4(tgkill, pid as usize, tid as usize, SIGTERM as usize, 0)
+            };
+            assert_eq!(sent, 0, "tgkill");
+            assert_eq!(start(), Ok(()));
+            assert_eq!(EARLY.load(Ordering::SeqCst), SIGTERM, "the pending SIGTERM was taken and dropped");
+            assert_eq!(wait(), Ok(SIGTERM));
+        })
+        .join()
+        .unwrap();
     }
 
     /// Bug (found in review): any result of rt_sigtimedwait but a signal

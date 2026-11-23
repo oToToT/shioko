@@ -82,7 +82,16 @@ fn main() -> ExitCode {
     if graceful.is_ok() {
         let stopping = std::sync::Arc::clone(&server);
         let stopper = std::thread::Builder::new().spawn(move || {
-            let signal = signals::wait();
+            let signal = match signals::wait() {
+                Ok(signal) => signal,
+                Err(why) => {
+                    stopping.log.error(&format!("no graceful stop: {why}"));
+                    // The signals reach this thread only: it must stay.
+                    loop {
+                        std::thread::park();
+                    }
+                }
+            };
             stopping.log.error(&format!(
                 "stopping on signal {signal}: letting nobody in, waiting up to {} s for the requests being served",
                 server::DRAIN_TIMEOUT.as_secs()
